@@ -62,7 +62,25 @@ export interface DownloadProgress {
   eta?: string;
   downloadedBytes?: number;
   totalBytes?: number;
-  status: "idle" | "fetching" | "downloading" | "processing" | "completed" | "error" | "cancelled";
+  status: "idle" | "fetching" | "downloading" | "processing" | "paused" | "interrupted" | "completed" | "error" | "cancelled";
+}
+
+export interface DownloadTask {
+  id: string;
+  title: string;
+  url: string;
+  thumbnail?: string;
+  format: string;
+  quality: string;
+  saveFolder: string;
+  percent: number;
+  speed?: string;
+  downloadedBytes?: number;
+  totalBytes?: number;
+  status: "completed" | "downloading" | "paused" | "interrupted" | "error";
+  error?: string;
+  createdAt: number;
+  options: DownloadOptions;
 }
 
 export interface ToolVersionInfo {

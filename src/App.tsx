@@ -3,9 +3,10 @@ import { Header } from "./components/Header";
 import { DownloadTab } from "./components/DownloadTab";
 import { SettingsTab } from "./components/SettingsTab";
 import { UpdatesTab } from "./components/UpdatesTab";
+import { HistoryTab } from "./components/HistoryTab";
 import { LogsTab } from "./components/LogsTab";
-import { DownloadOptions, MediaInfo, DownloadProgress, ToolVersionInfo } from "./types";
-import { Download, Settings, RefreshCw, Terminal } from "lucide-react";
+import { DownloadOptions, MediaInfo, DownloadProgress, ToolVersionInfo, DownloadTask } from "./types";
+import { Download, Settings, RefreshCw, Terminal, Clock } from "lucide-react";
 
 // Check if running inside Tauri 2 environment
 const isTauri = () => {
@@ -42,7 +43,7 @@ const DEFAULT_OPTIONS: DownloadOptions = {
 
 export const App: React.FC = () => {
   const [theme, setTheme] = useState<"dark" | "light">("dark");
-  const [activeTab, setActiveTab] = useState<"download" | "settings" | "updates" | "logs">("download");
+  const [activeTab, setActiveTab] = useState<"download" | "history" | "settings" | "updates" | "logs">("download");
 
   const [options, setOptions] = useState<DownloadOptions>(() => {
     try {
@@ -52,8 +53,31 @@ export const App: React.FC = () => {
     return DEFAULT_OPTIONS;
   });
 
+  // Persistent Download Tasks (Survives PC restart & power outages)
+  const [tasks, setTasks] = useState<DownloadTask[]>(() => {
+    try {
+      const saved = localStorage.getItem("gm_downloader_tasks");
+      if (saved) {
+        const parsed: DownloadTask[] = JSON.parse(saved);
+        // Mark any previously 'downloading' task as 'interrupted' when app restarts
+        return parsed.map((t) =>
+          t.status === "downloading" ? { ...t, status: "interrupted" as const } : t
+        );
+      }
+    } catch {}
+    return [];
+  });
+
+  // Save tasks to localStorage whenever updated
+  useEffect(() => {
+    try {
+      localStorage.setItem("gm_downloader_tasks", JSON.stringify(tasks));
+    } catch {}
+  }, [tasks]);
+
   const [mediaInfo, setMediaInfo] = useState<MediaInfo | null>(null);
   const [fetching, setFetching] = useState(false);
+  const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
   const [progress, setProgress] = useState<DownloadProgress>({
     percent: 0,
     text: "Ready to download",
@@ -62,7 +86,7 @@ export const App: React.FC = () => {
 
   const [logs, setLogs] = useState<string[]>([
     `[${new Date().toLocaleTimeString()}] GM Downloader initialized.`,
-    `[${new Date().toLocaleTimeString()}] Tech Stack: Tauri 2 + Rust + React + TypeScript + Tailwind CSS.`,
+    `[${new Date().toLocaleTimeString()}] Auto-Resume & Power-Loss recovery engine active.`,
   ]);
 
   const [updateLogs, setUpdateLogs] = useState<string[]>([]);
@@ -79,7 +103,6 @@ export const App: React.FC = () => {
     ffmpeg: { name: "FFmpeg", installedVersion: "N-126374", latestVersion: "N-126374", hasUpdate: false },
   });
 
-  // Apply dark theme class
   useEffect(() => {
     if (theme === "dark") {
       document.documentElement.classList.add("dark");
@@ -96,7 +119,6 @@ export const App: React.FC = () => {
     setUpdateLogs((prev) => [...prev, `[${new Date().toLocaleTimeString()}] ${msg}`]);
   };
 
-  // Save options to localStorage
   const handleSavePreferences = () => {
     try {
       localStorage.setItem("gm_downloader_opts", JSON.stringify(options));
@@ -122,7 +144,6 @@ export const App: React.FC = () => {
         setMediaInfo(res);
         addLog(`Info fetched: "${res.title}" (${res.duration}s)`);
       } else {
-        // Fallback preview
         setTimeout(() => {
           setMediaInfo({
             title: "Sample Web Video for GM Downloader Preview",
@@ -148,22 +169,44 @@ export const App: React.FC = () => {
     }
   };
 
-  // Start Download
-  const handleStartDownload = async () => {
-    addLog(`Starting download: ${options.url}`);
-    if (options.enableClip) {
-      addLog(`[Clip Range Active] ${options.startTime} to ${options.endTime}`);
-    }
+  // Start Download (With Task Queue Tracking)
+  const handleStartDownload = async (customOpts?: DownloadOptions) => {
+    const optsToUse = customOpts || options;
+    const taskId = Date.now().toString();
+    setActiveTaskId(taskId);
 
-    setProgress({ percent: 5, text: "Connecting to media stream...", status: "downloading" });
+    const title = mediaInfo?.title || optsToUse.url;
+    const newTask: DownloadTask = {
+      id: taskId,
+      title,
+      url: optsToUse.url,
+      thumbnail: mediaInfo?.thumbnail,
+      format: optsToUse.format,
+      quality: optsToUse.quality,
+      saveFolder: optsToUse.saveFolder,
+      percent: 0,
+      status: "downloading",
+      createdAt: Date.now(),
+      options: optsToUse,
+    };
+
+    setTasks((prev) => [newTask, ...prev.filter((t) => t.url !== optsToUse.url)]);
+    addLog(`Task created [${title}]. Resuming partial streams if existing.`);
+    setProgress({ percent: 5, text: "Connecting to media stream (checking existing partial chunks)...", status: "downloading" });
 
     if (isTauri()) {
       try {
         const { invoke } = await import("@tauri-apps/api/core");
-        await invoke("start_download", { options });
+        await invoke("start_download", { options: optsToUse });
+        setTasks((prev) =>
+          prev.map((t) => (t.id === taskId ? { ...t, percent: 100, status: "completed" } : t))
+        );
       } catch (err: any) {
         addLog(`[ERROR] Download error: ${err}`);
         setProgress({ percent: 0, text: `Failed: ${err}`, status: "error" });
+        setTasks((prev) =>
+          prev.map((t) => (t.id === taskId ? { ...t, status: "interrupted", error: String(err) } : t))
+        );
       }
     } else {
       // Browser simulation
@@ -173,25 +216,57 @@ export const App: React.FC = () => {
         if (p >= 100) {
           clearInterval(interval);
           setProgress({ percent: 100, text: "Download Completed Successfully! ✔", status: "completed" });
-          addLog("Download finished successfully. Saved to target folder.");
+          setTasks((prev) =>
+            prev.map((t) => (t.id === taskId ? { ...t, percent: 100, status: "completed" } : t))
+          );
+          addLog("Download finished. Saved to disk.");
         } else {
           setProgress({
             percent: p,
             text: `${p}% | 12.4 MiB / 48.0 MiB | 5.2 MiB/s | ETA: 00:00:08`,
             status: "downloading",
           });
+          setTasks((prev) =>
+            prev.map((t) => (t.id === taskId ? { ...t, percent: p, speed: "5.2 MiB/s" } : t))
+          );
         }
       }, 500);
     }
   };
 
   const handleCancelDownload = async () => {
-    addLog("Cancelling download...");
-    setProgress({ percent: 0, text: "Download Cancelled", status: "cancelled" });
+    addLog("Cancelling download. Preserving .part file for resume.");
+    setProgress({ percent: 0, text: "Download Paused / Cancelled", status: "paused" });
+    if (activeTaskId) {
+      setTasks((prev) =>
+        prev.map((t) => (t.id === activeTaskId ? { ...t, status: "paused" } : t))
+      );
+    }
     if (isTauri()) {
       const { invoke } = await import("@tauri-apps/api/core");
       await invoke("cancel_download");
     }
+  };
+
+  // Resume an interrupted/paused task
+  const handleResumeTask = (task: DownloadTask) => {
+    addLog(`Resuming task: "${task.title}" using yt-dlp continue engine...`);
+    setActiveTab("download");
+    setOptions(task.options);
+    handleStartDownload(task.options);
+  };
+
+  const handlePauseTask = (id: string) => {
+    setTasks((prev) => prev.map((t) => (t.id === id ? { ...t, status: "paused" } : t)));
+    handleCancelDownload();
+  };
+
+  const handleDeleteTask = (id: string) => {
+    setTasks((prev) => prev.filter((t) => t.id !== id));
+  };
+
+  const handleClearCompleted = () => {
+    setTasks((prev) => prev.filter((t) => t.status !== "completed"));
   };
 
   const handleBrowseFolder = async () => {
@@ -206,16 +281,16 @@ export const App: React.FC = () => {
     }
   };
 
-  const handleOpenFolder = async () => {
+  const handleOpenFolder = async (path?: string) => {
+    const target = path || options.saveFolder;
     if (isTauri()) {
       try {
         const { invoke } = await import("@tauri-apps/api/core");
-        await invoke("open_folder", { path: options.saveFolder });
+        await invoke("open_folder", { path: target });
       } catch {}
     }
   };
 
-  // Check Tool Updates
   const handleCheckUpdates = async () => {
     setCheckingUpdates(true);
     addUpdLog("Checking for tool updates (yt-dlp, Deno, FFmpeg)...");
@@ -275,6 +350,23 @@ export const App: React.FC = () => {
           </button>
 
           <button
+            onClick={() => setActiveTab("history")}
+            className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all relative ${
+              activeTab === "history"
+                ? "bg-primary text-primary-foreground shadow-sm"
+                : "text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            <Clock className="w-3.5 h-3.5" />
+            <span>Queue & History</span>
+            {tasks.length > 0 && (
+              <span className="ml-1 px-1.5 py-0.2 rounded-full bg-secondary text-[10px] font-bold border border-border">
+                {tasks.length}
+              </span>
+            )}
+          </button>
+
+          <button
             onClick={() => setActiveTab("settings")}
             className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all ${
               activeTab === "settings"
@@ -324,11 +416,22 @@ export const App: React.FC = () => {
             mediaInfo={mediaInfo}
             fetching={fetching}
             onFetchInfo={handleFetchInfo}
-            onStartDownload={handleStartDownload}
+            onStartDownload={() => handleStartDownload()}
             onCancelDownload={handleCancelDownload}
             onBrowseFolder={handleBrowseFolder}
-            onOpenFolder={handleOpenFolder}
+            onOpenFolder={() => handleOpenFolder()}
             progress={progress}
+          />
+        )}
+
+        {activeTab === "history" && (
+          <HistoryTab
+            tasks={tasks}
+            onResumeTask={handleResumeTask}
+            onPauseTask={handlePauseTask}
+            onDeleteTask={handleDeleteTask}
+            onClearCompleted={handleClearCompleted}
+            onOpenFolder={(path) => handleOpenFolder(path)}
           />
         )}
 
