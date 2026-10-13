@@ -473,7 +473,30 @@ export function App() {
     ]);
 
     try {
-      const msg = await invoke<string>("update_tool", { toolName });
+      let msg = "";
+      if ((window as any).GMAndroidBridge?.isAndroidAvailable?.()) {
+        if (toolName.toLowerCase().includes("yt-dlp")) {
+          msg = await new Promise<string>((resolve, reject) => {
+            const cbId = "update_" + Date.now();
+            (window as any).onAndroidUpdateResult = (
+              id: string,
+              success: boolean,
+              resultMsg: string
+            ) => {
+              if (id === cbId) {
+                if (success) resolve(resultMsg);
+                else reject(new Error(resultMsg));
+              }
+            };
+            (window as any).GMAndroidBridge.updateYtDlp(cbId);
+          });
+        } else {
+          msg = `${toolName} is a pre-compiled native Android C/C++ engine — already active & up to date!`;
+        }
+      } else {
+        msg = await invoke<string>("update_tool", { toolName });
+      }
+
       setUpdateLogs((prev) => [
         ...prev,
         `[${new Date().toLocaleTimeString()}] ✔ ${msg}`,

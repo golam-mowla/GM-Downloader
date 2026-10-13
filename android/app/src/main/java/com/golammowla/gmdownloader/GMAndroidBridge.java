@@ -47,6 +47,8 @@ public class GMAndroidBridge {
                 request.addOption("--dump-single-json");
                 request.addOption("--no-playlist");
                 request.addOption("--no-check-certificates");
+                request.addOption("--no-update");
+                request.addOption("--extractor-args", "youtube:player_client=android,web");
                 request.addOption("--user-agent", "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1");
                 YoutubeDLResponse response = YoutubeDL.getInstance().execute(request);
                 String json = response.getOut();
@@ -67,15 +69,40 @@ public class GMAndroidBridge {
                 request.addOption("-o", saveDir.getAbsolutePath() + "/%(title)s.%(ext)s");
                 request.addOption("--no-part");
                 request.addOption("--no-check-certificates");
+                request.addOption("--no-update");
+                request.addOption("--extractor-args", "youtube:player_client=android,web");
                 request.addOption("--user-agent", "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1");
 
                 if (formatSpec != null && !formatSpec.isEmpty() && !formatSpec.equals("best")) {
                     request.addOption("-f", formatSpec);
                 }
-                if (container != null && !container.toLowerCase().contains("generic")) {
-                    String ext = container.toLowerCase().replaceAll("[^a-z0-9]", "");
-                    request.addOption("--merge-output-format", ext);
+
+                // Proper clean container & audio extraction handling
+                String cUpper = container != null ? container.toUpperCase() : "";
+                String targetExt = null;
+                boolean isAudio = cUpper.contains("AUDIO");
+
+                if (cUpper.startsWith("MP4")) targetExt = "mp4";
+                else if (cUpper.startsWith("WEBM")) targetExt = "webm";
+                else if (cUpper.startsWith("MKV")) targetExt = "mkv";
+                else if (cUpper.startsWith("MOV")) targetExt = "mov";
+                else if (cUpper.startsWith("AVI")) targetExt = "avi";
+                else if (cUpper.startsWith("MP3")) targetExt = "mp3";
+                else if (cUpper.startsWith("M4A")) targetExt = "m4a";
+                else if (cUpper.startsWith("OPUS")) targetExt = "opus";
+                else if (cUpper.startsWith("FLAC")) targetExt = "flac";
+                else if (cUpper.startsWith("WAV")) targetExt = "wav";
+                else if (cUpper.startsWith("OGG")) targetExt = "ogg";
+
+                if (targetExt != null) {
+                    if (isAudio) {
+                        request.addOption("-x");
+                        request.addOption("--audio-format", targetExt);
+                    } else {
+                        request.addOption("--merge-output-format", targetExt);
+                    }
                 }
+
                 if (enableClip && startTime != null && endTime != null && !startTime.isEmpty()) {
                     request.addOption("--download-sections", "*" + startTime + "-" + endTime);
                 }
@@ -110,6 +137,22 @@ public class GMAndroidBridge {
                 evalJs("window.onAndroidLog(" + JSONObject.quote("[Android yt-dlp] Cancelled task " + taskId) + ");");
             } catch (Exception e) {
                 Log.e("GMDownloader", "cancelDownload error", e);
+            }
+        }).start();
+    }
+
+    @JavascriptInterface
+    public void updateYtDlp(String callbackId) {
+        new Thread(() -> {
+            try {
+                evalJs("window.onAndroidLog(\"[Updater] Checking and downloading latest yt-dlp binary from GitHub...\");");
+                YoutubeDL.UpdateStatus status = YoutubeDL.getInstance().updateYoutubeDL(activity.getApplicationContext(), YoutubeDL.UpdateChannel.STABLE.INSTANCE);
+                evalJs("window.onAndroidLog(\"[Updater] ✔ yt-dlp update status: " + status.name() + "\");");
+                evalJs("window.onAndroidUpdateResult(" + JSONObject.quote(callbackId) + ", true, \"yt-dlp updated successfully! Status: " + status.name() + "\");");
+            } catch (Exception e) {
+                Log.e("GMDownloader", "updateYtDlp error", e);
+                evalJs("window.onAndroidLog(\"[Updater] ❌ Error updating yt-dlp: " + JSONObject.quote(e.getMessage() != null ? e.getMessage() : e.toString()) + "\");");
+                evalJs("window.onAndroidUpdateResult(" + JSONObject.quote(callbackId) + ", false, \"Error: " + (e.getMessage() != null ? e.getMessage() : e.toString()) + "\");");
             }
         }).start();
     }
