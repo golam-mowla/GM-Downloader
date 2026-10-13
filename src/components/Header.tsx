@@ -69,8 +69,8 @@ export const Header: React.FC<HeaderProps> = ({
               <h1 className="text-base sm:text-lg font-black tracking-tight bg-gradient-to-r from-slate-900 via-indigo-700 to-cyan-600 dark:from-white dark:via-cyan-300 dark:to-indigo-400 bg-clip-text text-transparent">
                 GM Downloader
               </h1>
-              <span className="px-2 py-0.5 text-[10px] font-black uppercase tracking-wider rounded-full bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border border-emerald-300 dark:border-emerald-700 flex items-center gap-1">
-                <Sparkles className="w-2.5 h-2.5" /> Pro v2.0
+              <span className="px-2 py-0.5 text-[10px] font-black uppercase tracking-wider rounded-full bg-cyan-50 dark:bg-cyan-950/60 text-cyan-700 dark:text-cyan-300 border border-cyan-300 dark:border-cyan-700 flex items-center gap-1">
+                v2.0.1
               </span>
             </div>
             <p className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">

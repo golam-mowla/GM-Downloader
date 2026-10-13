@@ -25,7 +25,7 @@ import {
   ToolVersionInfo,
 } from "./types";
 
-const CURRENT_APP_VERSION = "2.0.0";
+const CURRENT_APP_VERSION = "2.0.1";
 
 const parseRawYtdlJsonToMediaInfo = (raw: any): MediaInfo => {
   const formats = Array.isArray(raw.formats) ? raw.formats : [];

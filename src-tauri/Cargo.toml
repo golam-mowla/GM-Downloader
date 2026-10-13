@@ -1,6 +1,6 @@
 [package]
 name = "gm-downloader"
-version = "1.0.0"
+version = "2.0.1"
 description = "GM Downloader - Modern media clipper and downloader powered by Tauri 2 and yt-dlp"
 authors = ["Golam Mowla"]
 edition = "2021"

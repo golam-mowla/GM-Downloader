@@ -143,8 +143,35 @@ fn get_augmented_path() -> String {
     let current_path = env::var("PATH").unwrap_or_default();
     let mut extra_dirs: Vec<PathBuf> = Vec::new();
 
+    // 1. Current Executable Directory & subdirectories (Portable folder)
+    if let Ok(exe_path) = env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            extra_dirs.push(exe_dir.to_path_buf());
+            extra_dirs.push(exe_dir.join("bin"));
+            extra_dirs.push(exe_dir.join("tools"));
+            extra_dirs.push(exe_dir.join("resources"));
+            extra_dirs.push(exe_dir.join("resources").join("bin"));
+        }
+    }
+
+    // 2. Current Working Directory
+    if let Ok(cwd) = env::current_dir() {
+        extra_dirs.push(cwd.clone());
+        extra_dirs.push(cwd.join("bin"));
+        extra_dirs.push(cwd.join("tools"));
+    }
+
+    // 3. User Dedicated Tool Paths
+    extra_dirs.push(PathBuf::from(r"D:\00VideoEditing Tools\yt-dlp"));
+    extra_dirs.push(PathBuf::from(r"D:\00VideoEditing Tools\yt-dlp\bin"));
+    extra_dirs.push(PathBuf::from(r"D:\Antigravity\yt-dlp"));
+
     if let Ok(local_app_data) = env::var("LOCALAPPDATA") {
         let local = PathBuf::from(&local_app_data);
+        // App's own local managed bin directory
+        extra_dirs.push(local.join("GM-Downloader").join("bin"));
+        extra_dirs.push(local.join("Programs").join("yt-dlp"));
+
         // WinGet Links
         let winget_links = local.join("Microsoft").join("WinGet").join("Links");
         if winget_links.exists() {
@@ -190,17 +217,23 @@ fn get_augmented_path() -> String {
         }
     }
 
+    if let Ok(app_data) = env::var("APPDATA") {
+        let appdata_p = PathBuf::from(&app_data);
+        extra_dirs.push(appdata_p.join("Python").join("Scripts"));
+    }
+
     if let Ok(user_profile) = env::var("USERPROFILE").or_else(|_| env::var("HOME")) {
         let home = PathBuf::from(&user_profile);
-        let deno_bin = home.join(".deno").join("bin");
-        if deno_bin.exists() {
-            extra_dirs.push(deno_bin);
-        }
-        let local_bin = home.join(".local").join("bin");
-        if local_bin.exists() {
-            extra_dirs.push(local_bin);
-        }
+        extra_dirs.push(home.join(".deno").join("bin"));
+        extra_dirs.push(home.join(".local").join("bin"));
+        extra_dirs.push(home.join("scoop").join("shims"));
+        extra_dirs.push(home.join("scoop").join("apps").join("yt-dlp").join("current"));
     }
+
+    extra_dirs.push(PathBuf::from(r"C:\ProgramData\chocolatey\bin"));
+    extra_dirs.push(PathBuf::from(r"C:\scoop\shims"));
+    extra_dirs.push(PathBuf::from(r"C:\Program Files\yt-dlp"));
+    extra_dirs.push(PathBuf::from(r"C:\Program Files (x86)\yt-dlp"));
 
     #[cfg(not(target_os = "windows"))]
     {
@@ -242,10 +275,86 @@ fn find_exe_in_augmented_path(bin_name: &str) -> Option<PathBuf> {
     None
 }
 
+fn ensure_ytdlp_available() -> Option<PathBuf> {
+    if let Some(existing) = find_exe_in_augmented_path("yt-dlp") {
+        return Some(existing);
+    }
+
+    // Auto-download standalone yt-dlp executable if missing on the system
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(local_app_data) = env::var("LOCALAPPDATA") {
+            let target_dir = PathBuf::from(&local_app_data).join("GM-Downloader").join("bin");
+            let _ = fs::create_dir_all(&target_dir);
+            let target_exe = target_dir.join("yt-dlp.exe");
+
+            // 1. Try curl.exe
+            let mut curl_cmd = Command::new("curl.exe");
+            curl_cmd.args([
+                "-L",
+                "-o",
+                target_exe.to_string_lossy().as_ref(),
+                "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe",
+            ]);
+            curl_cmd.creation_flags(CREATE_NO_WINDOW);
+            if let Ok(status) = curl_cmd.status() {
+                if status.success() && target_exe.exists() {
+                    return Some(target_exe);
+                }
+            }
+
+            // 2. Try PowerShell Invoke-WebRequest fallback
+            let ps_script = format!(
+                "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe' -OutFile '{}'",
+                target_exe.display()
+            );
+            let mut ps_cmd = Command::new("powershell.exe");
+            ps_cmd.args(["-NoProfile", "-NonInteractive", "-Command", &ps_script]);
+            ps_cmd.creation_flags(CREATE_NO_WINDOW);
+            if let Ok(status) = ps_cmd.status() {
+                if status.success() && target_exe.exists() {
+                    return Some(target_exe);
+                }
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        if let Ok(user_profile) = env::var("HOME") {
+            let target_dir = PathBuf::from(&user_profile).join(".local").join("bin");
+            let _ = fs::create_dir_all(&target_dir);
+            let target_bin = target_dir.join("yt-dlp");
+
+            let mut curl_cmd = Command::new("curl");
+            curl_cmd.args([
+                "-L",
+                "-o",
+                target_bin.to_string_lossy().as_ref(),
+                "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp",
+            ]);
+            if let Ok(status) = curl_cmd.status() {
+                if status.success() && target_bin.exists() {
+                    let _ = Command::new("chmod").args(["+x", target_bin.to_string_lossy().as_ref()]).status();
+                    return Some(target_bin);
+                }
+            }
+        }
+    }
+
+    None
+}
+
 fn make_command(bin_name: &str) -> Command {
-    let resolved = find_exe_in_augmented_path(bin_name)
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_else(|| bin_name.to_string());
+    let resolved = if bin_name == "yt-dlp" {
+        ensure_ytdlp_available()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|| bin_name.to_string())
+    } else {
+        find_exe_in_augmented_path(bin_name)
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|| bin_name.to_string())
+    };
 
     let mut cmd = Command::new(resolved);
     cmd.env("PATH", get_augmented_path());
@@ -303,85 +412,101 @@ async fn fetch_media_info(
     discovery_args: Option<String>,
 ) -> Result<MediaInfo, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let mut cmd = make_command("yt-dlp");
-        cmd.args([
-            "--dump-single-json",
-            "--no-playlist",
-            "--no-warnings",
-            "--quiet",
-        ]);
-
-        // Pass Deno JS runtime if available
-        if find_exe_in_augmented_path("deno").is_some() {
-            cmd.args(["--js-runtimes", "deno"]);
+        let clean_url = url.trim().to_string();
+        if clean_url.is_empty() {
+            return Err("URL cannot be empty".to_string());
         }
 
-        if let Some(cb) = cookies_browser {
-            if cb != "None" && !cb.trim().is_empty() {
-                cmd.args(["--cookies-from-browser", &cb.to_lowercase()]);
+        let build_cmd = |extractor_arg: Option<&str>| {
+            let mut cmd = make_command("yt-dlp");
+            cmd.args([
+                "--dump-single-json",
+                "--no-playlist",
+                "--no-check-certificates",
+            ]);
+
+            if let Some(arg) = extractor_arg {
+                cmd.args(["--extractor-args", arg]);
             }
-        }
-        if let Some(cf) = cookies_file {
-            if !cf.trim().is_empty() && PathBuf::from(&cf).exists() {
-                cmd.args(["--cookies", &cf]);
-            }
-        }
-        if let Some(pr) = proxy {
-            if !pr.trim().is_empty() {
-                cmd.args(["--proxy", pr.trim()]);
-            }
-        }
-        if let Some(extra) = discovery_args {
-            for arg in extra.split_whitespace() {
-                if !arg.is_empty() {
-                    cmd.arg(arg);
+
+            if let Some(ref cb) = cookies_browser {
+                if cb != "None" && !cb.trim().is_empty() {
+                    cmd.args(["--cookies-from-browser", &cb.to_lowercase()]);
                 }
             }
-        }
-
-        cmd.arg(url.trim());
-
-        let mut output = cmd
-            .output()
-            .map_err(|e| format!("Could not launch yt-dlp: {}", e))?;
-
-        // Intelligent 18+ Age Restriction & Sign-in wall auto-retry
-        if !output.status.success() {
-            let err = String::from_utf8_lossy(&output.stderr);
-            if err.contains("confirm your age") || err.contains("inappropriate") || err.contains("Sign in") {
-                let mut retry_cmd = make_command("yt-dlp");
-                retry_cmd.args([
-                    "--dump-single-json",
-                    "--no-playlist",
-                    "--no-warnings",
-                    "--quiet",
-                    "--extractor-args",
-                    "youtube:player_client=android",
-                ]);
-                retry_cmd.arg(url.trim());
-                if let Ok(retry_out) = retry_cmd.output() {
-                    if retry_out.status.success() {
-                        output = retry_out;
+            if let Some(ref cf) = cookies_file {
+                if !cf.trim().is_empty() && PathBuf::from(cf).exists() {
+                    cmd.args(["--cookies", cf]);
+                }
+            }
+            if let Some(ref pr) = proxy {
+                if !pr.trim().is_empty() {
+                    cmd.args(["--proxy", pr.trim()]);
+                }
+            }
+            if let Some(ref extra) = discovery_args {
+                for arg in extra.split_whitespace() {
+                    if !arg.is_empty() {
+                        cmd.arg(arg);
                     }
                 }
             }
+
+            cmd.arg(&clean_url);
+            cmd
+        };
+
+        // Attempt 1: Fetch with modern Android/Web client bypass
+        let mut output = build_cmd(Some("youtube:player_client=android,web"))
+            .output()
+            .map_err(|e| format!("Could not launch yt-dlp: {}", e))?;
+
+        // Attempt 2: If failed, retry with iOS client bypass
+        if !output.status.success() {
+            if let Ok(retry_out) = build_cmd(Some("youtube:player_client=ios,web")).output() {
+                if retry_out.status.success() {
+                    output = retry_out;
+                }
+            }
+        }
+
+        // Attempt 3: If still failed, try standard default extractor
+        if !output.status.success() {
+            if let Ok(retry_out) = build_cmd(None).output() {
+                if retry_out.status.success() {
+                    output = retry_out;
+                }
+            }
         }
 
         if !output.status.success() {
             let err = String::from_utf8_lossy(&output.stderr);
-            return Err(format!("yt-dlp failed to fetch URL: {}", err.trim()));
+            let out = String::from_utf8_lossy(&output.stdout);
+            let combined = format!("{}\n{}", err.trim(), out.trim());
+            let final_err = if combined.trim().is_empty() {
+                "Failed to fetch metadata. Please verify the link or network connection.".to_string()
+            } else {
+                combined.trim().to_string()
+            };
+            return Err(format!("yt-dlp fetch failed: {}", final_err));
         }
 
         let stdout_str = String::from_utf8_lossy(&output.stdout);
-        // Find JSON line in case any notice was printed before it
-        let json_line = stdout_str
-            .lines()
-            .rev()
-            .find(|l| l.trim_start().starts_with('{'))
-            .unwrap_or(&stdout_str);
+        let stdout_trimmed = stdout_str.trim();
 
-        let v: serde_json::Value = serde_json::from_str(json_line)
-            .map_err(|e| format!("Failed to parse media JSON: {}", e))?;
+        // Robust JSON slice extraction between first '{' and last '}'
+        let json_slice = if let (Some(start), Some(end)) = (stdout_trimmed.find('{'), stdout_trimmed.rfind('}')) {
+            if start < end {
+                &stdout_trimmed[start..=end]
+            } else {
+                stdout_trimmed
+            }
+        } else {
+            stdout_trimmed
+        };
+
+        let v: serde_json::Value = serde_json::from_str(json_slice)
+            .map_err(|e| format!("Failed to parse media JSON: {} (Output was: {})", e, stdout_trimmed.chars().take(200).collect::<String>()))?;
 
         let id = v["id"].as_str().map(|s| s.to_string());
         let title = v["title"].as_str().unwrap_or("Untitled Media").to_string();
