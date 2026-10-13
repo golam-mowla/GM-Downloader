@@ -556,19 +556,23 @@ export function App() {
     }
   };
 
-  const handleFetchInfo = async (overrideUrl?: string) => {
-    const url = (overrideUrl || options.url).trim();
-    if (!url) return;
-    if (overrideUrl) {
-      setOptions((prev) => ({ ...prev, url: overrideUrl }));
+  const handleFetchInfo = async (overrideUrl?: string | any) => {
+    const rawTarget = typeof overrideUrl === "string" ? overrideUrl : options.url;
+    const url = (rawTarget || "").trim();
+    if (!url) {
+      setFetchError("Please enter or paste a video URL before fetching.");
+      return;
+    }
+    if (typeof overrideUrl === "string") {
+      setOptions((prev) => ({ ...prev, url }));
     }
 
     setIsFetching(true);
     setFetchError(null);
     setMediaInfo(null);
     setProgress({
-      percent: 10,
-      text: "Inspecting link (18+ bypass & dynamic qualities discovery)...",
+      percent: 15,
+      text: "Inspecting link & discovering available video/audio streams...",
       status: "fetching",
     });
 
@@ -579,7 +583,12 @@ export function App() {
           const callbackId = "cb_" + Math.random().toString(36).slice(2);
           (window as any).onAndroidFetchSuccess = (cbId: string, raw: any) => {
             if (cbId === callbackId) {
-              resolve(parseRawYtdlJsonToMediaInfo(raw));
+              try {
+                const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+                resolve(parseRawYtdlJsonToMediaInfo(parsed));
+              } catch (e: any) {
+                reject(new Error("Failed to parse media metadata: " + (e?.message || e)));
+              }
             }
           };
           (window as any).onAndroidFetchError = (cbId: string, err: string) => {
@@ -621,7 +630,7 @@ export function App() {
       setFetchError(errMsg);
       setProgress({
         percent: 0,
-        text: "Could not fetch metadata. You can still click Start Download.",
+        text: `Fetch failed: ${errMsg.slice(0, 120)}`,
         status: "error",
       });
     } finally {
@@ -795,12 +804,17 @@ export function App() {
     }
   };
 
-  const handleStartDownload = (overrideMode?: DownloadMode) => {
-    const effectiveOptions: DownloadOptions = overrideMode
+  const handleStartDownload = (overrideMode?: DownloadMode | any) => {
+    const validMode: DownloadMode | undefined =
+      overrideMode === "video" || overrideMode === "audio" || overrideMode === "subtitles"
+        ? overrideMode
+        : undefined;
+
+    const effectiveOptions: DownloadOptions = validMode
       ? {
           ...options,
-          downloadMode: overrideMode,
-          enableSubtitles: overrideMode === "subtitles" ? true : options.enableSubtitles,
+          downloadMode: validMode,
+          enableSubtitles: validMode === "subtitles" ? true : options.enableSubtitles,
         }
       : options;
 
@@ -973,10 +987,10 @@ export function App() {
             mediaInfo={mediaInfo}
             isFetching={isFetching}
             fetchError={fetchError}
-            onFetchInfo={handleFetchInfo}
+            onFetchInfo={() => handleFetchInfo()}
             onBrowseFolder={handleBrowseFolder}
             onOpenFolder={() => handleOpenFolder()}
-            onStartDownload={handleStartDownload}
+            onStartDownload={(mode) => handleStartDownload(mode)}
             onCancelDownload={handleCancelDownload}
             onResumeTask={handleResumeTask}
             tasks={tasks}

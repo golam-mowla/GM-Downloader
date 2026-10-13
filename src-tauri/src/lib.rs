@@ -456,12 +456,12 @@ async fn fetch_media_info(
             cmd
         };
 
-        // Attempt 1: Fetch with modern Android/Web client bypass
-        let mut output = build_cmd(Some("youtube:player_client=android,web"))
+        // Attempt 1: Standard extractor (discovers full 4K, 2K, 1080p, 60fps, Opus, etc. without format restrictions)
+        let mut output = build_cmd(None)
             .output()
             .map_err(|e| format!("Could not launch yt-dlp: {}", e))?;
 
-        // Attempt 2: If failed, retry with iOS client bypass
+        // Attempt 2: If failed (e.g. YouTube bot detection or login check), retry with iOS client bypass
         if !output.status.success() {
             if let Ok(retry_out) = build_cmd(Some("youtube:player_client=ios,web")).output() {
                 if retry_out.status.success() {
@@ -470,9 +470,9 @@ async fn fetch_media_info(
             }
         }
 
-        // Attempt 3: If still failed, try standard default extractor
+        // Attempt 3: If still failed, retry with Android client bypass
         if !output.status.success() {
-            if let Ok(retry_out) = build_cmd(None).output() {
+            if let Ok(retry_out) = build_cmd(Some("youtube:player_client=android,web")).output() {
                 if retry_out.status.success() {
                     output = retry_out;
                 }

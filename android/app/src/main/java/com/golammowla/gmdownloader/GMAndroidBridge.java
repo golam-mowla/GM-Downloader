@@ -69,6 +69,13 @@ public class GMAndroidBridge {
                 request.addOption("--compat-options", "manifest-filesize-approx");
                 YoutubeDLResponse response = YoutubeDL.getInstance().execute(request);
                 String json = response.getOut();
+                if (json != null) {
+                    int start = json.indexOf('{');
+                    int end = json.lastIndexOf('}');
+                    if (start >= 0 && end > start) {
+                        json = json.substring(start, end + 1);
+                    }
+                }
                 evalJs("window.onAndroidFetchSuccess(" + JSONObject.quote(callbackId) + ", " + json + ");");
             } catch (Exception e) {
                 Log.e("GMDownloader", "fetchMediaInfo error", e);

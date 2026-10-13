@@ -173,7 +173,7 @@ export const DownloadTab: React.FC<DownloadTabProps> = ({
 
           <button
             type="button"
-            onClick={onFetchInfo}
+            onClick={() => onFetchInfo()}
             disabled={isFetching || !options.url.trim()}
             className="neon-btn-primary px-5 py-2.5 rounded-xl text-xs sm:text-sm font-extrabold flex items-center justify-center gap-2 shrink-0 disabled:opacity-50"
           >
