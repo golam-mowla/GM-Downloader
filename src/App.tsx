@@ -38,6 +38,7 @@ const parseRawYtdlJsonToMediaInfo = (raw: any): MediaInfo => {
       ext: f.ext || "mp4",
       resolution: f.resolution || (f.height ? `${f.height}p` : "HD"),
       fps: f.fps || 30,
+      height: f.height || 0,
       filesize: f.filesize
         ? `${(f.filesize / (1024 * 1024)).toFixed(1)} MB`
         : f.filesize_approx
@@ -45,7 +46,12 @@ const parseRawYtdlJsonToMediaInfo = (raw: any): MediaInfo => {
         : "Dynamic",
       vcodec: f.vcodec || "",
       acodec: f.acodec || "",
-    }));
+    }))
+    .sort((a: any, b: any) => {
+      const hA = a.height || parseInt(String(a.resolution || "").replace(/[^0-9]/g, "")) || 0;
+      const hB = b.height || parseInt(String(b.resolution || "").replace(/[^0-9]/g, "")) || 0;
+      return hB - hA;
+    });
 
   const audioStreams = formats
     .filter(
@@ -60,12 +66,14 @@ const parseRawYtdlJsonToMediaInfo = (raw: any): MediaInfo => {
       ext: f.ext || "m4a",
       resolution: "Audio only",
       fps: 0,
+      abr: f.abr || 0,
       filesize: f.filesize
         ? `${(f.filesize / (1024 * 1024)).toFixed(1)} MB`
         : "Dynamic",
       vcodec: "none",
       acodec: f.acodec || "",
-    }));
+    }))
+    .sort((a: any, b: any) => (b.abr || 0) - (a.abr || 0));
 
   const subs: SubtitleTrack[] = Object.keys(raw.subtitles || {}).map((lang) => ({
     code: lang,
@@ -394,6 +402,29 @@ export function App() {
           // ignore
         }
       }
+
+      // Handle URLs shared from YouTube, browsers, or other apps
+      (window as any).onAndroidSharedUrl = (sharedUrl: string) => {
+        if (sharedUrl && typeof sharedUrl === "string") {
+          const cleanUrl = sharedUrl.trim();
+          setActiveTab("download");
+          setOptions((prev) => ({ ...prev, url: cleanUrl }));
+          setTimeout(() => {
+            handleFetchInfo(cleanUrl);
+          }, 200);
+        }
+      };
+
+      if ((window as any).GMAndroidBridge?.getPendingSharedUrl) {
+        try {
+          const pending = (window as any).GMAndroidBridge.getPendingSharedUrl();
+          if (pending) {
+            (window as any).onAndroidSharedUrl(pending);
+          }
+        } catch {
+          // ignore
+        }
+      }
     };
 
     setupListeners();
@@ -523,9 +554,12 @@ export function App() {
     }
   };
 
-  const handleFetchInfo = async () => {
-    const url = options.url.trim();
+  const handleFetchInfo = async (overrideUrl?: string) => {
+    const url = (overrideUrl || options.url).trim();
     if (!url) return;
+    if (overrideUrl) {
+      setOptions((prev) => ({ ...prev, url: overrideUrl }));
+    }
 
     setIsFetching(true);
     setFetchError(null);

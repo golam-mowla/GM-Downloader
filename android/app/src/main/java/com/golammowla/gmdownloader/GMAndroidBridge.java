@@ -18,6 +18,7 @@ import kotlin.Unit;
 public class GMAndroidBridge {
     private final MainActivity activity;
     private final Handler mainHandler;
+    private volatile String pendingSharedUrl = null;
 
     public GMAndroidBridge(MainActivity activity) {
         this.activity = activity;
@@ -27,6 +28,23 @@ public class GMAndroidBridge {
     @JavascriptInterface
     public boolean isAndroidAvailable() {
         return true;
+    }
+
+    @JavascriptInterface
+    public String getPendingSharedUrl() {
+        String url = this.pendingSharedUrl;
+        this.pendingSharedUrl = null;
+        return url;
+    }
+
+    public void setPendingSharedUrl(String url) {
+        this.pendingSharedUrl = url;
+    }
+
+    public void dispatchSharedUrl(String url) {
+        if (url == null || url.isEmpty()) return;
+        this.pendingSharedUrl = url;
+        evalJs("if (window.onAndroidSharedUrl) { window.onAndroidSharedUrl(" + JSONObject.quote(url) + "); }");
     }
 
     @JavascriptInterface
@@ -48,8 +66,7 @@ public class GMAndroidBridge {
                 request.addOption("--no-playlist");
                 request.addOption("--no-check-certificates");
                 request.addOption("--no-update");
-                request.addOption("--extractor-args", "youtube:player_client=android,web");
-                request.addOption("--user-agent", "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1");
+                request.addOption("--compat-options", "manifest-filesize-approx");
                 YoutubeDLResponse response = YoutubeDL.getInstance().execute(request);
                 String json = response.getOut();
                 evalJs("window.onAndroidFetchSuccess(" + JSONObject.quote(callbackId) + ", " + json + ");");
@@ -70,8 +87,6 @@ public class GMAndroidBridge {
                 request.addOption("--no-part");
                 request.addOption("--no-check-certificates");
                 request.addOption("--no-update");
-                request.addOption("--extractor-args", "youtube:player_client=android,web");
-                request.addOption("--user-agent", "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1");
 
                 if (formatSpec != null && !formatSpec.isEmpty() && !formatSpec.equals("best")) {
                     request.addOption("-f", formatSpec);
@@ -157,7 +172,7 @@ public class GMAndroidBridge {
         }).start();
     }
 
-    private void evalJs(String code) {
+    public void evalJs(String code) {
         mainHandler.post(() -> {
             WebView wv = activity.getBridge() != null ? activity.getBridge().getWebView() : null;
             if (wv != null) {
