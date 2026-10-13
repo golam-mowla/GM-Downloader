@@ -4,55 +4,124 @@ export interface MediaStream {
   height?: number;
   fps?: number;
   ext?: string;
-  size?: string;
+  vcodec?: string;
+  acodec?: string;
+  filesize?: number;
   hasAudio?: boolean;
 }
 
+export interface SubtitleTrack {
+  code: string;
+  name: string;
+  isAuto: boolean;
+}
+
 export interface MediaInfo {
+  id?: string;
   title: string;
   uploader?: string;
   duration?: number;
   thumbnail?: string;
-  formats?: any[];
   videoStreams: MediaStream[];
   audioStreams: MediaStream[];
+  subtitles: SubtitleTrack[];
 }
+
+export type DownloadMode = "video" | "audio" | "subtitles";
+
+export type ContainerFormat =
+  | "Video (Generic)"
+  | "MP4 (Video)"
+  | "WEBM (Video)"
+  | "MKV (Video)"
+  | "MOV (Video)"
+  | "AVI (Video)"
+  | "Audio (Generic)"
+  | "MP3 (Audio)"
+  | "M4A (Audio)"
+  | "OPUS (Audio)"
+  | "FLAC (Audio)"
+  | "WAV (Audio)"
+  | "OGG (Audio)";
+
+export const ALL_CONTAINERS: ContainerFormat[] = [
+  "Video (Generic)",
+  "MP4 (Video)",
+  "WEBM (Video)",
+  "MKV (Video)",
+  "MOV (Video)",
+  "AVI (Video)",
+  "Audio (Generic)",
+  "MP3 (Audio)",
+  "M4A (Audio)",
+  "OPUS (Audio)",
+  "FLAC (Audio)",
+  "WAV (Audio)",
+  "OGG (Audio)",
+];
 
 export interface DownloadOptions {
   url: string;
   saveFolder: string;
-  mediaType: "Video" | "Audio";
-  format: string; // MP4, MKV, WebM, MP3, M4A, OPUS, FLAC, WAV
-  quality: string; // Best, 4K, 1080p, 720p, etc.
-  customVid?: string;
-  customAud?: string;
-  
+  downloadMode: DownloadMode;
+  container: ContainerFormat;
+  videoStreamId: string;
+  audioStreamId: string;
+  audioBitrate: string;
+
+  // Subtitle Section
+  enableSubtitles: boolean;
+  subtitleLang: string;
+  subtitleFormat: "srt" | "vtt" | "ass" | "lrc" | "any";
+  subtitleSaveMode: "separate" | "embed" | "both";
+
   // Timeframe / Clip Section
   enableClip: boolean;
   startTime: string;
   endTime: string;
   preciseCut: boolean;
 
-  // Parabolic Options
-  downloadSubtitles: boolean;
-  embedSubtitles: boolean;
-  autoSubtitles: boolean;
-  subtitleLanguages: string;
+  // Parabolic Options - UI
+  theme: "Light (White Neon)" | "System" | "Dark";
+  translationLanguage: string;
+  receivePreviewUpdates: boolean;
+  preventSuspend: boolean;
+  historyLength: string;
 
-  embedMetadata: boolean;
-  embedThumbnail: boolean;
-  cropThumbnail: boolean;
-  splitChapters: boolean;
-  sponsorBlock: boolean;
-
-  downloader: "Native" | "Aria2c";
-  aria2Connections: string;
-  speedLimitKb: string;
+  // Parabolic Options - Downloads
+  maxActiveDownloads: number;
   overwriteFiles: boolean;
+  includeMediaId: boolean;
+  includeAutoSubtitles: boolean;
+  includeSuperRes: boolean;
+  preferredVideoCodec: string;
+  preferredAudioCodec: string;
+  preferredSubtitleFormat: string;
+  preferredFps: string;
 
-  cookiesBrowser: string; // None, Chrome, Edge, Firefox, Brave, Opera
-  cookiesFile: string;
+  // Parabolic Options - Downloader
+  usePartFiles: boolean;
+  sponsorBlock: boolean;
+  limitSpeed: boolean;
+  speedLimitKb: number;
   proxy: string;
+  cookiesFile: string;
+  cookiesBrowser: string;
+  useAria2c: boolean;
+  aria2Connections: number;
+  ytdlpDiscoveryArgs: string;
+  ytdlpDownloadArgs: string;
+
+  // Parabolic Options - Converter
+  translateMetadata: boolean;
+  embedMetadata: boolean;
+  embedThumbnails: boolean;
+  cropAudioThumbnails: boolean;
+  embedChapters: boolean;
+  splitChapters: boolean;
+  embedSubtitlesGlobal: boolean;
+  ffmpegThreads: number;
+  postProcessorArgs: string;
 }
 
 export interface DownloadProgress {
@@ -60,9 +129,16 @@ export interface DownloadProgress {
   text: string;
   speed?: string;
   eta?: string;
-  downloadedBytes?: number;
-  totalBytes?: number;
-  status: "idle" | "fetching" | "downloading" | "processing" | "paused" | "interrupted" | "completed" | "error" | "cancelled";
+  status:
+    | "idle"
+    | "fetching"
+    | "downloading"
+    | "processing"
+    | "paused"
+    | "interrupted"
+    | "completed"
+    | "error"
+    | "cancelled";
 }
 
 export interface DownloadTask {
@@ -70,13 +146,11 @@ export interface DownloadTask {
   title: string;
   url: string;
   thumbnail?: string;
-  format: string;
-  quality: string;
+  container: string;
+  qualityLabel: string;
   saveFolder: string;
   percent: number;
   speed?: string;
-  downloadedBytes?: number;
-  totalBytes?: number;
   status: "completed" | "downloading" | "paused" | "interrupted" | "error";
   error?: string;
   createdAt: number;

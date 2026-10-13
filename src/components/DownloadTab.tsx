@@ -1,442 +1,741 @@
-import React, { useState, useEffect } from "react";
+import React, { useState } from "react";
 import {
-  Download,
-  Scissors,
-  FolderOpen,
-  Clipboard,
+  ClipboardPaste,
   Search,
+  FolderOpen,
+  Scissors,
+  Download,
+  PauseCircle,
+  Film,
+  Music,
+  Subtitles,
+  Sparkles,
   CheckCircle2,
   AlertCircle,
-  Clock,
-  Sparkles,
-  Music,
-  Video,
-  StopCircle,
+  Loader2,
+  ExternalLink,
+  TerminalSquare,
+  ChevronDown,
+  ChevronUp,
 } from "lucide-react";
-import { DownloadOptions, MediaInfo, DownloadProgress } from "../types";
-import { formatTime, parseTimeToSeconds } from "../lib/utils";
+import {
+  ALL_CONTAINERS,
+  ContainerFormat,
+  DownloadMode,
+  DownloadOptions,
+  DownloadProgress,
+  MediaInfo,
+} from "../types";
 
 interface DownloadTabProps {
   options: DownloadOptions;
   setOptions: React.Dispatch<React.SetStateAction<DownloadOptions>>;
   mediaInfo: MediaInfo | null;
-  fetching: boolean;
-  onFetchInfo: (url: string) => void;
-  onStartDownload: () => void;
-  onCancelDownload: () => void;
+  isFetching: boolean;
+  fetchError: string | null;
+  onFetchInfo: () => void;
   onBrowseFolder: () => void;
   onOpenFolder: () => void;
+  onStartDownload: (overrideMode?: DownloadMode) => void;
+  onCancelDownload: () => void;
   progress: DownloadProgress;
+  logs: string[];
 }
 
 export const DownloadTab: React.FC<DownloadTabProps> = ({
   options,
   setOptions,
   mediaInfo,
-  fetching,
+  isFetching,
+  fetchError,
   onFetchInfo,
-  onStartDownload,
-  onCancelDownload,
   onBrowseFolder,
   onOpenFolder,
+  onStartDownload,
+  onCancelDownload,
   progress,
+  logs,
 }) => {
-  const [showAdvStreams, setShowAdvStreams] = useState(false);
+  const [showLogs, setShowLogs] = useState(false);
 
-  // Update clip end time when duration is detected
-  useEffect(() => {
-    if (mediaInfo?.duration && (!options.endTime || options.endTime === "00:01:00")) {
-      setOptions((prev) => ({
-        ...prev,
-        endTime: formatTime(mediaInfo.duration),
-      }));
-    }
-  }, [mediaInfo?.duration]);
+  const updateOption = <K extends keyof DownloadOptions>(
+    key: K,
+    value: DownloadOptions[K]
+  ) => {
+    setOptions((prev) => ({ ...prev, [key]: value }));
+  };
 
-  // Handle URL paste from clipboard
   const handlePaste = async () => {
     try {
       const text = await navigator.clipboard.readText();
-      if (text && (text.startsWith("http://") || text.startsWith("https://"))) {
-        setOptions((prev) => ({ ...prev, url: text.trim() }));
-        onFetchInfo(text.trim());
+      if (text) {
+        updateOption("url", text.trim());
       }
     } catch {
-      // ignore
+      // Fallback if clipboard permission denied
     }
   };
 
-  // Calculate selected clip duration
-  const startSec = parseTimeToSeconds(options.startTime || "00:00:00");
-  const endSec = parseTimeToSeconds(options.endTime || "00:00:00");
-  const clipDuration = Math.max(0, endSec - startSec);
+  const handleModeChange = (mode: DownloadMode) => {
+    setOptions((prev) => {
+      let nextContainer = prev.container;
+      if (mode === "audio" && prev.container.includes("(Video)")) {
+        nextContainer = "MP3 (Audio)";
+      } else if (mode === "video" && prev.container.includes("(Audio)")) {
+        nextContainer = "MP4 (Video)";
+      }
+      return {
+        ...prev,
+        downloadMode: mode,
+        container: nextContainer,
+        enableSubtitles: mode === "subtitles" ? true : prev.enableSubtitles,
+      };
+    });
+  };
 
-  const isDownloading = progress.status === "downloading" || progress.status === "processing";
+  const handleContainerChange = (container: ContainerFormat) => {
+    setOptions((prev) => {
+      let nextMode = prev.downloadMode;
+      if (container.includes("(Audio)")) {
+        nextMode = "audio";
+      } else if (container.includes("(Video)")) {
+        nextMode = "video";
+      }
+      return {
+        ...prev,
+        container,
+        downloadMode: nextMode,
+      };
+    });
+  };
+
+  const formatDuration = (seconds?: number) => {
+    if (!seconds || isNaN(seconds)) return "00:00";
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const s = Math.floor(seconds % 60);
+    if (h > 0) {
+      return `${h.toString().padStart(2, "0")}:${m
+        .toString()
+        .padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
+    }
+    return `${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
+  };
+
+  const isBusy =
+    progress.status === "downloading" || progress.status === "processing";
 
   return (
-    <div className="space-y-5 max-w-4xl mx-auto pb-10">
-      {/* 1. URL Input Card */}
-      <div className="p-4 rounded-xl border border-border bg-card shadow-sm space-y-3">
-        <label className="text-xs font-semibold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
-          <Search className="w-3.5 h-3.5 text-primary" />
-          <span>Media URL</span>
-        </label>
-        <div className="flex gap-2">
+    <div className="space-y-4">
+      {/* 1. MEDIA SOURCE URL CARD */}
+      <div className="neon-card neon-border-cyan p-4 sm:p-5">
+        <div className="flex items-center justify-between mb-2.5">
+          <label className="text-xs font-extrabold uppercase tracking-wider text-slate-600 dark:text-slate-300 flex items-center gap-1.5">
+            <Sparkles className="w-3.5 h-3.5 text-cyan-500" />
+            Media Source Link (YouTube, Facebook, Instagram, TikTok, X, 1000+ Sites)
+          </label>
+          {mediaInfo && (
+            <span className="text-[11px] font-bold text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/60 px-2.5 py-0.5 rounded-full border border-emerald-200 dark:border-emerald-800">
+              ✔ {mediaInfo.videoStreams.length} Video &bull;{" "}
+              {mediaInfo.audioStreams.length} Audio &bull;{" "}
+              {mediaInfo.subtitles.length} Subtitles Found
+            </span>
+          )}
+        </div>
+
+        <div className="flex flex-col sm:flex-row gap-2.5">
+          <button
+            type="button"
+            onClick={handlePaste}
+            className="px-3.5 py-2.5 rounded-xl text-xs font-bold bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 border border-slate-300 dark:border-slate-700 flex items-center justify-center gap-1.5 shrink-0 transition-all"
+          >
+            <ClipboardPaste className="w-4 h-4 text-cyan-600" />
+            Paste
+          </button>
+
           <input
             type="text"
             value={options.url}
-            onChange={(e) => setOptions({ ...options, url: e.target.value })}
-            placeholder="Paste YouTube, Facebook, TikTok, Instagram, Twitter, or web media URL..."
-            className="flex-1 bg-secondary/50 border border-border rounded-lg px-3.5 py-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all"
-            onKeyDown={(e) => e.key === "Enter" && onFetchInfo(options.url)}
+            onChange={(e) => updateOption("url", e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && options.url.trim() && !isFetching) {
+                onFetchInfo();
+              }
+            }}
+            placeholder="https://www.youtube.com/watch?v=... or paste any video URL"
+            className="neon-input flex-1 px-4 py-2.5 text-sm font-medium"
           />
+
           <button
-            onClick={handlePaste}
-            className="px-3.5 py-2 rounded-lg bg-secondary hover:bg-secondary/80 text-foreground border border-border text-xs font-medium flex items-center gap-1.5 transition-all shadow-sm"
+            type="button"
+            onClick={onFetchInfo}
+            disabled={isFetching || !options.url.trim()}
+            className="neon-btn-primary px-5 py-2.5 rounded-xl text-xs sm:text-sm font-extrabold flex items-center justify-center gap-2 shrink-0 disabled:opacity-50"
           >
-            <Clipboard className="w-3.5 h-3.5" />
-            <span>Paste</span>
-          </button>
-          <button
-            onClick={() => onFetchInfo(options.url)}
-            disabled={fetching || !options.url.trim()}
-            className="px-4 py-2 rounded-lg bg-primary hover:bg-primary/90 disabled:opacity-50 text-primary-foreground text-xs font-semibold flex items-center gap-1.5 transition-all shadow-sm"
-          >
-            {fetching ? (
-              <span className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+            {isFetching ? (
+              <>
+                <Loader2 className="w-4 h-4 animate-spin" />
+                Fetching Formats...
+              </>
             ) : (
-              <Search className="w-3.5 h-3.5" />
+              <>
+                <Search className="w-4 h-4" />
+                Fetch Link Qualities
+              </>
             )}
-            <span>{fetching ? "Fetching..." : "Fetch Info"}</span>
           </button>
         </div>
+
+        {/* Fetch Error Alert */}
+        {fetchError && (
+          <div className="mt-3 p-3 rounded-xl bg-rose-50 dark:bg-rose-950/50 border border-rose-200 dark:border-rose-800 flex items-start gap-2.5 text-xs text-rose-700 dark:text-rose-300">
+            <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+            <div className="flex-1">
+              <p className="font-bold">Could not fetch link metadata:</p>
+              <p className="mt-0.5 break-all opacity-90">{fetchError}</p>
+              <p className="mt-1 text-[11px] text-rose-600 dark:text-rose-400 font-semibold">
+                Tip: You can still click &ldquo;Start Download&rdquo; directly, or enable Browser Cookies inside ⚙️ Options &rarr; Downloader for private/age-restricted links.
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* Fetched Media Info Preview Banner */}
+        {mediaInfo && (
+          <div className="mt-3.5 p-3 rounded-xl bg-gradient-to-r from-cyan-50/90 via-indigo-50/60 to-purple-50/80 dark:from-slate-800/90 dark:to-slate-900/90 border border-cyan-200 dark:border-cyan-800/70 flex flex-col sm:flex-row items-center gap-3.5">
+            {mediaInfo.thumbnail ? (
+              <img
+                src={mediaInfo.thumbnail}
+                alt={mediaInfo.title}
+                className="w-32 h-20 object-cover rounded-lg border border-cyan-300 dark:border-cyan-700 shadow-sm shrink-0"
+              />
+            ) : (
+              <div className="w-32 h-20 rounded-lg bg-cyan-100 dark:bg-slate-800 flex items-center justify-center shrink-0">
+                <Film className="w-7 h-7 text-cyan-600" />
+              </div>
+            )}
+            <div className="flex-1 min-w-0 text-center sm:text-left">
+              <div className="flex flex-wrap items-center justify-center sm:justify-start gap-1.5 mb-1">
+                <span className="px-2 py-0.5 text-[10px] font-extrabold uppercase rounded-md bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-700">
+                  ✔ Link Fetched
+                </span>
+                {mediaInfo.duration ? (
+                  <span className="px-2 py-0.5 text-[10px] font-bold rounded-md bg-cyan-100 dark:bg-cyan-950 text-cyan-800 dark:text-cyan-300">
+                    ⏱ Duration: {formatDuration(mediaInfo.duration)}
+                  </span>
+                ) : null}
+                {mediaInfo.uploader ? (
+                  <span className="px-2 py-0.5 text-[10px] font-bold rounded-md bg-purple-100 dark:bg-purple-950 text-purple-800 dark:text-purple-300">
+                    👤 {mediaInfo.uploader}
+                  </span>
+                ) : null}
+              </div>
+              <h3 className="text-sm font-extrabold text-slate-900 dark:text-white truncate">
+                {mediaInfo.title}
+              </h3>
+              <p className="text-xs text-slate-600 dark:text-slate-400 mt-0.5">
+                All exact qualities, codecs &amp; subtitle tracks for this link are now loaded below.
+              </p>
+            </div>
+          </div>
+        )}
       </div>
 
-      {/* 2. Media Preview Card */}
-      <div className="p-4 rounded-xl border border-border bg-card shadow-sm flex items-center gap-4 transition-all">
-        <div className="w-24 h-16 rounded-lg bg-secondary border border-border overflow-hidden flex-shrink-0 flex items-center justify-center relative shadow-inner">
-          {mediaInfo?.thumbnail ? (
-            <img
-              src={mediaInfo.thumbnail}
-              alt="Thumbnail"
-              className="w-full h-full object-cover"
-            />
-          ) : (
-            <Video className="w-8 h-8 text-muted-foreground/60" />
+      {/* 2. DYNAMIC QUALITIES & ALL 13 CONTAINERS + SUBTITLES + CLIPPER */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+        {/* Left 7 Cols: Dynamic Quality & Container Picker */}
+        <div className="lg:col-span-7 neon-card p-4 sm:p-5 space-y-4">
+          <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-2.5">
+            <span className="text-xs font-extrabold uppercase tracking-wider text-indigo-600 dark:text-indigo-400 flex items-center gap-1.5">
+              <Film className="w-4 h-4" />
+              Dynamic Quality &amp; Container Format
+            </span>
+            <span className="text-[11px] font-bold text-slate-400">
+              13 Containers Supported
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+            {/* Download Mode 3-Way Toggle */}
+            <div>
+              <label className="block text-xs font-bold text-slate-600 dark:text-slate-300 mb-1.5">
+                Download Mode
+              </label>
+              <div className="grid grid-cols-3 gap-1.5 bg-slate-100 dark:bg-slate-800/90 p-1 rounded-xl border border-slate-200 dark:border-slate-700">
+                <button
+                  type="button"
+                  onClick={() => handleModeChange("video")}
+                  className={`py-2 px-2 rounded-lg text-xs font-extrabold flex items-center justify-center gap-1 transition-all ${
+                    options.downloadMode === "video"
+                      ? "bg-white dark:bg-slate-900 text-indigo-600 dark:text-cyan-400 shadow-sm border border-cyan-300 dark:border-cyan-700"
+                      : "text-slate-600 dark:text-slate-400 hover:text-slate-900"
+                  }`}
+                >
+                  <Film className="w-3.5 h-3.5" />
+                  Video
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleModeChange("audio")}
+                  className={`py-2 px-2 rounded-lg text-xs font-extrabold flex items-center justify-center gap-1 transition-all ${
+                    options.downloadMode === "audio"
+                      ? "bg-white dark:bg-slate-900 text-indigo-600 dark:text-cyan-400 shadow-sm border border-cyan-300 dark:border-cyan-700"
+                      : "text-slate-600 dark:text-slate-400 hover:text-slate-900"
+                  }`}
+                >
+                  <Music className="w-3.5 h-3.5" />
+                  Audio
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleModeChange("subtitles")}
+                  className={`py-2 px-2 rounded-lg text-xs font-extrabold flex items-center justify-center gap-1 transition-all ${
+                    options.downloadMode === "subtitles"
+                      ? "bg-white dark:bg-slate-900 text-emerald-600 dark:text-emerald-400 shadow-sm border border-emerald-300 dark:border-emerald-700"
+                      : "text-slate-600 dark:text-slate-400 hover:text-slate-900"
+                  }`}
+                >
+                  <Subtitles className="w-3.5 h-3.5" />
+                  Subtitles
+                </button>
+              </div>
+            </div>
+
+            {/* Container Dropdown (All 13 Options from User's Screenshot) */}
+            <div>
+              <label className="block text-xs font-bold text-slate-600 dark:text-slate-300 mb-1.5">
+                Container Format
+              </label>
+              <select
+                value={options.container}
+                onChange={(e) =>
+                  handleContainerChange(e.target.value as ContainerFormat)
+                }
+                className="neon-input w-full px-3 py-2 text-xs sm:text-sm font-bold"
+              >
+                {ALL_CONTAINERS.map((c) => (
+                  <option key={c} value={c}>
+                    {c}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          {/* Dynamic Video Quality Dropdown (shown when mode !== audio && mode !== subtitles) */}
+          {options.downloadMode === "video" && (
+            <div>
+              <div className="flex items-center justify-between mb-1.5">
+                <label className="text-xs font-bold text-slate-600 dark:text-slate-300">
+                  Available Video Qualities (Detected from Link)
+                </label>
+                {mediaInfo && mediaInfo.videoStreams.length > 0 && (
+                  <span className="text-[11px] font-bold text-cyan-600 dark:text-cyan-400">
+                    {mediaInfo.videoStreams.length} exact video streams
+                  </span>
+                )}
+              </div>
+              <select
+                value={options.videoStreamId}
+                onChange={(e) => updateOption("videoStreamId", e.target.value)}
+                className="neon-input w-full px-3 py-2.5 text-xs sm:text-sm font-semibold"
+              >
+                <option value="best">
+                  🌟 Best Available Video (Auto Highest Resolution &amp; FPS)
+                </option>
+                {mediaInfo && mediaInfo.videoStreams.length > 0 ? (
+                  mediaInfo.videoStreams.map((stream) => (
+                    <option key={stream.id} value={stream.id}>
+                      🎬 {stream.label}
+                    </option>
+                  ))
+                ) : (
+                  <>
+                    <option value="bestvideo[height<=2160]">
+                      🎬 2160p (4K UHD)
+                    </option>
+                    <option value="bestvideo[height<=1440]">
+                      🎬 1440p (2K QHD)
+                    </option>
+                    <option value="bestvideo[height<=1080]">
+                      🎬 1080p (Full HD)
+                    </option>
+                    <option value="bestvideo[height<=720]">
+                      🎬 720p (HD)
+                    </option>
+                    <option value="bestvideo[height<=480]">
+                      🎬 480p (Standard)
+                    </option>
+                    <option value="bestvideo[height<=360]">
+                      🎬 360p (Data Saver)
+                    </option>
+                  </>
+                )}
+              </select>
+            </div>
+          )}
+
+          {/* Dynamic Audio Quality Dropdown */}
+          {options.downloadMode !== "subtitles" && (
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div className="sm:col-span-2">
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="text-xs font-bold text-slate-600 dark:text-slate-300">
+                    Available Audio Stream (Detected from Link)
+                  </label>
+                  {mediaInfo && mediaInfo.audioStreams.length > 0 && (
+                    <span className="text-[11px] font-bold text-purple-600 dark:text-purple-400">
+                      {mediaInfo.audioStreams.length} audio tracks
+                    </span>
+                  )}
+                </div>
+                <select
+                  value={options.audioStreamId}
+                  onChange={(e) => updateOption("audioStreamId", e.target.value)}
+                  className="neon-input w-full px-3 py-2.5 text-xs sm:text-sm font-semibold"
+                >
+                  <option value="ba">
+                    🎵 Best Available Audio Stream (Auto Highest Bitrate)
+                  </option>
+                  {mediaInfo &&
+                    mediaInfo.audioStreams.map((stream) => (
+                      <option key={stream.id} value={stream.id}>
+                        🎧 {stream.label}
+                      </option>
+                    ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-600 dark:text-slate-300 mb-1.5">
+                  Audio Bitrate / Quality
+                </label>
+                <select
+                  value={options.audioBitrate}
+                  onChange={(e) => updateOption("audioBitrate", e.target.value)}
+                  className="neon-input w-full px-3 py-2.5 text-xs sm:text-sm font-semibold"
+                >
+                  <option value="0">320 kbps (Best)</option>
+                  <option value="192K">192 kbps (High)</option>
+                  <option value="128K">128 kbps (Standard)</option>
+                </select>
+              </div>
+            </div>
           )}
         </div>
-        <div className="flex-1 min-w-0">
-          <h2 className="text-sm font-semibold truncate text-foreground">
-            {mediaInfo ? mediaInfo.title : "No URL loaded yet. Paste a link to auto-detect."}
-          </h2>
-          <div className="text-xs text-muted-foreground mt-1 flex items-center gap-3">
-            <span className="flex items-center gap-1">
-              <Clock className="w-3 h-3" />
-              Duration: {mediaInfo?.duration ? formatTime(mediaInfo.duration) : "--:--:--"}
-            </span>
-            {mediaInfo?.uploader && (
-              <span>• Channel: {mediaInfo.uploader}</span>
-            )}
-          </div>
-        </div>
-      </div>
 
-      {/* 3. Format & Quality Card */}
-      <div className="p-4 rounded-xl border border-border bg-card shadow-sm space-y-4">
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {/* Media Type Selection */}
-          <div className="space-y-2">
-            <label className="text-xs font-semibold text-muted-foreground">Media Type</label>
-            <div className="flex rounded-lg bg-secondary/60 p-1 border border-border">
+        {/* Right 5 Cols: Separate Subtitle Download + Timeframe Clipper */}
+        <div className="lg:col-span-5 space-y-4">
+          {/* SEPARATE SUBTITLE DOWNLOAD CARD */}
+          <div className="neon-card neon-border-emerald p-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-extrabold uppercase tracking-wider text-emerald-700 dark:text-emerald-400 flex items-center gap-1.5">
+                <Subtitles className="w-4 h-4 text-emerald-600" />
+                Separate Subtitle Download
+              </span>
+              <label className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-700 dark:text-emerald-300 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={
+                    options.enableSubtitles ||
+                    options.downloadMode === "subtitles"
+                  }
+                  onChange={(e) =>
+                    updateOption("enableSubtitles", e.target.checked)
+                  }
+                  className="w-4 h-4 accent-emerald-600 rounded"
+                />
+                Include Subtitles
+              </label>
+            </div>
+
+            <div className="space-y-2.5">
+              <div>
+                <label className="block text-[11px] font-bold text-slate-600 dark:text-slate-300 mb-1">
+                  Available Subtitle Tracks (from Link)
+                </label>
+                <select
+                  value={options.subtitleLang}
+                  onChange={(e) => updateOption("subtitleLang", e.target.value)}
+                  className="neon-input w-full px-3 py-2 text-xs font-semibold"
+                >
+                  {mediaInfo && mediaInfo.subtitles.length > 0 && (
+                    <optgroup label="Detected on This Link">
+                      {mediaInfo.subtitles.map((sub) => (
+                        <option key={sub.code} value={sub.code}>
+                          💬 {sub.name}
+                        </option>
+                      ))}
+                    </optgroup>
+                  )}
+                  <optgroup label="Standard Language Presets">
+                    <option value="en,bn">
+                      English + Bengali (en, bn)
+                    </option>
+                    <option value="en">English (en)</option>
+                    <option value="bn">Bengali / বাংলা (bn)</option>
+                    <option value="hi">Hindi (hi)</option>
+                    <option value="ar">Arabic (ar)</option>
+                    <option value="es">Spanish (es)</option>
+                    <option value="all">All Available Subtitles (all)</option>
+                  </optgroup>
+                </select>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2.5">
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-600 dark:text-slate-300 mb-1">
+                    Subtitle Format
+                  </label>
+                  <select
+                    value={options.subtitleFormat}
+                    onChange={(e) =>
+                      updateOption(
+                        "subtitleFormat",
+                        e.target.value as DownloadOptions["subtitleFormat"]
+                      )
+                    }
+                    className="neon-input w-full px-2.5 py-1.5 text-xs font-semibold"
+                  >
+                    <option value="srt">SRT (.srt)</option>
+                    <option value="vtt">WebVTT (.vtt)</option>
+                    <option value="ass">ASS (.ass)</option>
+                    <option value="lrc">Lyrics (.lrc)</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-600 dark:text-slate-300 mb-1">
+                    Save Mode
+                  </label>
+                  <select
+                    value={options.subtitleSaveMode}
+                    onChange={(e) =>
+                      updateOption(
+                        "subtitleSaveMode",
+                        e.target.value as DownloadOptions["subtitleSaveMode"]
+                      )
+                    }
+                    className="neon-input w-full px-2.5 py-1.5 text-xs font-semibold"
+                  >
+                    <option value="separate">Save Separate File</option>
+                    <option value="both">Both (Separate + Embed)</option>
+                    <option value="embed">Embed in Video</option>
+                  </select>
+                </div>
+              </div>
+
               <button
                 type="button"
-                onClick={() => setOptions({ ...options, mediaType: "Video", format: "MP4" })}
-                className={`flex-1 py-1.5 rounded-md text-xs font-semibold flex items-center justify-center gap-1.5 transition-all ${
-                  options.mediaType === "Video"
-                    ? "bg-primary text-primary-foreground shadow-sm"
-                    : "text-muted-foreground hover:text-foreground"
-                }`}
+                disabled={isBusy || !options.url.trim()}
+                onClick={() => onStartDownload("subtitles")}
+                className="w-full py-2 px-3 rounded-xl text-xs font-extrabold bg-emerald-50 hover:bg-emerald-100 dark:bg-emerald-950/80 dark:hover:bg-emerald-900 text-emerald-700 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-700 flex items-center justify-center gap-1.5 transition-all disabled:opacity-50"
               >
-                <Video className="w-3.5 h-3.5" />
-                Video
-              </button>
-              <button
-                type="button"
-                onClick={() => setOptions({ ...options, mediaType: "Audio", format: "MP3" })}
-                className={`flex-1 py-1.5 rounded-md text-xs font-semibold flex items-center justify-center gap-1.5 transition-all ${
-                  options.mediaType === "Audio"
-                    ? "bg-primary text-primary-foreground shadow-sm"
-                    : "text-muted-foreground hover:text-foreground"
-                }`}
-              >
-                <Music className="w-3.5 h-3.5" />
-                Audio
+                <Subtitles className="w-3.5 h-3.5" />
+                Download Subtitle File (.{options.subtitleFormat.toUpperCase()}) Only
               </button>
             </div>
           </div>
 
-          {/* Container Selection */}
-          <div className="space-y-2">
-            <label className="text-xs font-semibold text-muted-foreground">Container Format</label>
-            <select
-              value={options.format}
-              onChange={(e) => setOptions({ ...options, format: e.target.value })}
-              className="w-full bg-secondary/50 border border-border rounded-lg px-3 py-1.5 text-xs text-foreground focus:outline-none focus:ring-2 focus:ring-primary/50"
+          {/* TIMEFRAME CLIPPER CARD */}
+          <div className="neon-card neon-border-violet p-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-extrabold uppercase tracking-wider text-purple-700 dark:text-purple-400 flex items-center gap-1.5">
+                <Scissors className="w-4 h-4 text-purple-600" />
+                Timeframe Clipper (Start &amp; End)
+              </span>
+              <label className="inline-flex items-center gap-1.5 text-xs font-bold text-purple-700 dark:text-purple-300 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={options.enableClip}
+                  onChange={(e) => updateOption("enableClip", e.target.checked)}
+                  className="w-4 h-4 accent-purple-600 rounded"
+                />
+                Enable Cut
+              </label>
+            </div>
+
+            <div
+              className={`grid grid-cols-3 gap-2.5 transition-opacity ${
+                options.enableClip ? "opacity-100" : "opacity-50 pointer-events-none"
+              }`}
             >
-              {options.mediaType === "Video" ? (
+              <div>
+                <label className="block text-[11px] font-bold text-slate-600 dark:text-slate-300 mb-1">
+                  Start Time
+                </label>
+                <input
+                  type="text"
+                  value={options.startTime}
+                  onChange={(e) => updateOption("startTime", e.target.value)}
+                  placeholder="00:01:00"
+                  className="neon-input w-full px-2.5 py-1.5 text-xs font-mono font-bold text-center"
+                />
+              </div>
+              <div>
+                <label className="block text-[11px] font-bold text-slate-600 dark:text-slate-300 mb-1">
+                  End Time
+                </label>
+                <input
+                  type="text"
+                  value={options.endTime}
+                  onChange={(e) => updateOption("endTime", e.target.value)}
+                  placeholder="00:03:30"
+                  className="neon-input w-full px-2.5 py-1.5 text-xs font-mono font-bold text-center"
+                />
+              </div>
+              <div className="flex items-end pb-1">
+                <label
+                  title="Forces keyframes at cut points via FFmpeg"
+                  className="inline-flex items-center gap-1.5 text-xs font-bold text-slate-700 dark:text-slate-300 cursor-pointer"
+                >
+                  <input
+                    type="checkbox"
+                    checked={options.preciseCut}
+                    onChange={(e) =>
+                      updateOption("preciseCut", e.target.checked)
+                    }
+                    className="w-4 h-4 accent-purple-600 rounded"
+                  />
+                  Precise Cut
+                </label>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* 3. SAVE LOCATION + ACTION BAR + PROGRESS */}
+      <div className="neon-card p-4 sm:p-5 space-y-4">
+        <div className="flex flex-col md:flex-row items-stretch md:items-end gap-3">
+          <div className="flex-1">
+            <label className="block text-xs font-bold text-slate-600 dark:text-slate-300 mb-1.5">
+              Save Destination Folder
+            </label>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={options.saveFolder}
+                onChange={(e) => updateOption("saveFolder", e.target.value)}
+                className="neon-input flex-1 px-3.5 py-2.5 text-xs sm:text-sm font-medium"
+              />
+              <button
+                type="button"
+                onClick={onBrowseFolder}
+                className="px-3.5 py-2.5 rounded-xl text-xs font-bold bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 border border-slate-300 dark:border-slate-700 flex items-center gap-1.5 shrink-0"
+              >
+                <FolderOpen className="w-4 h-4 text-indigo-600" />
+                Browse
+              </button>
+              <button
+                type="button"
+                onClick={onOpenFolder}
+                title="Open destination folder in Explorer/Finder"
+                className="px-3 py-2.5 rounded-xl text-xs font-bold bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 border border-slate-300 dark:border-slate-700 flex items-center gap-1 shrink-0"
+              >
+                <ExternalLink className="w-4 h-4 text-cyan-600" />
+              </button>
+            </div>
+          </div>
+
+          <div className="flex gap-2.5">
+            {isBusy && (
+              <button
+                type="button"
+                onClick={onCancelDownload}
+                className="px-4 py-3 rounded-xl text-xs sm:text-sm font-extrabold bg-amber-50 hover:bg-amber-100 text-amber-700 border border-amber-300 flex items-center justify-center gap-2 shrink-0"
+              >
+                <PauseCircle className="w-4 h-4" />
+                Pause / Stop
+              </button>
+            )}
+
+            <button
+              type="button"
+              disabled={isBusy || !options.url.trim()}
+              onClick={() => onStartDownload()}
+              className="neon-btn-primary px-7 py-3 rounded-xl text-sm font-extrabold flex items-center justify-center gap-2 shrink-0 disabled:opacity-50"
+            >
+              {isBusy ? (
                 <>
-                  <option value="MP4">MP4 (Default, High Compatibility)</option>
-                  <option value="MKV">MKV (Matroska, Subtitle Friendly)</option>
-                  <option value="WebM">WebM (Open Web Video)</option>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  Downloading...
                 </>
               ) : (
                 <>
-                  <option value="MP3">MP3 (Universal Audio)</option>
-                  <option value="M4A">M4A (High Efficiency AAC)</option>
-                  <option value="OPUS">OPUS (Modern Low-Bitrate Voice/Music)</option>
-                  <option value="FLAC">FLAC (Lossless Studio Quality)</option>
-                  <option value="WAV">WAV (Uncompressed Raw PCM)</option>
+                  <Download className="w-4 h-4" />
+                  Start Download
                 </>
               )}
-            </select>
+            </button>
           </div>
         </div>
 
-        {/* Quality Preset */}
-        <div className="space-y-2">
-          <label className="text-xs font-semibold text-muted-foreground">Quality Preset</label>
-          <select
-            value={options.quality}
-            onChange={(e) => setOptions({ ...options, quality: e.target.value })}
-            className="w-full bg-secondary/50 border border-border rounded-lg px-3 py-1.5 text-xs text-foreground focus:outline-none focus:ring-2 focus:ring-primary/50"
-          >
-            {options.mediaType === "Video" ? (
-              <>
-                <option value="Best">Best Quality Available</option>
-                <option value="4K (2160p)">4K UHD (2160p)</option>
-                <option value="1440p (2K)">2K QHD (1440p)</option>
-                <option value="1080p (FHD)">Full HD (1080p)</option>
-                <option value="720p (HD)">HD (720p)</option>
-                <option value="480p (SD)">SD (480p)</option>
-                <option value="360p">Low (360p)</option>
-              </>
-            ) : (
-              <>
-                <option value="Best">Best (VBR 0 / Lossless)</option>
-                <option value="320k">320 kbps (Extreme Quality)</option>
-                <option value="256k">256 kbps (High Quality)</option>
-                <option value="192k">192 kbps (Standard Quality)</option>
-                <option value="128k">128 kbps (Compact Size)</option>
-              </>
-            )}
-          </select>
-        </div>
-
-        {/* Advanced Stream Selector Toggle */}
-        <div className="pt-1">
-          <label className="inline-flex items-center gap-2 cursor-pointer text-xs text-muted-foreground hover:text-foreground">
-            <input
-              type="checkbox"
-              checked={showAdvStreams}
-              onChange={(e) => setShowAdvStreams(e.target.checked)}
-              className="rounded border-border text-primary focus:ring-primary"
-            />
-            <span>Show Advanced Stream Selector (Specific Codec & Stream ID)</span>
-          </label>
-
-          {showAdvStreams && (
-            <div className="mt-3 p-3 bg-secondary/30 rounded-lg border border-border/80 grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
-              <div>
-                <label className="text-muted-foreground font-medium block mb-1">Video Stream</label>
-                <select
-                  value={options.customVid || ""}
-                  onChange={(e) => setOptions({ ...options, customVid: e.target.value })}
-                  className="w-full bg-card border border-border rounded-md px-2 py-1 text-xs"
-                >
-                  <option value="">Auto (Best matched)</option>
-                  {mediaInfo?.videoStreams.map((s) => (
-                    <option key={s.id} value={s.id}>
-                      {s.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className="text-muted-foreground font-medium block mb-1">Audio Stream</label>
-                <select
-                  value={options.customAud || ""}
-                  onChange={(e) => setOptions({ ...options, customAud: e.target.value })}
-                  className="w-full bg-card border border-border rounded-md px-2 py-1 text-xs"
-                >
-                  <option value="">Auto (Best matched)</option>
-                  {mediaInfo?.audioStreams.map((s) => (
-                    <option key={s.id} value={s.id}>
-                      {s.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* 4. Timeframe / Clip Card (HIGHLIGHTED FEATURE) */}
-      <div className="p-4 rounded-xl border border-primary/30 bg-primary/5 shadow-sm space-y-4">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Scissors className="w-4 h-4 text-primary" />
-            <span className="text-sm font-semibold text-foreground">
-              Download Specific Timeframe (Clip Range)
+        {/* Live Neon Progress Bar */}
+        <div className="space-y-1.5">
+          <div className="flex items-center justify-between text-xs font-bold">
+            <span className="flex items-center gap-1.5 text-slate-700 dark:text-slate-200">
+              {progress.status === "completed" ? (
+                <CheckCircle2 className="w-4 h-4 text-emerald-500" />
+              ) : progress.status === "error" ? (
+                <AlertCircle className="w-4 h-4 text-rose-500" />
+              ) : null}
+              {progress.text}
+            </span>
+            <span className="text-indigo-600 dark:text-cyan-400 font-extrabold">
+              {progress.speed ? `${progress.speed} • ` : ""}
+              {progress.eta ? `ETA ${progress.eta} • ` : ""}
+              {progress.percent.toFixed(1)}%
             </span>
           </div>
 
-          <label className="relative inline-flex items-center cursor-pointer">
-            <input
-              type="checkbox"
-              checked={options.enableClip}
-              onChange={(e) => setOptions({ ...options, enableClip: e.target.checked })}
-              className="sr-only peer"
+          <div className="w-full h-3 rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden border border-slate-200 dark:border-slate-700 p-0.5">
+            <div
+              className="h-full rounded-full transition-all duration-300"
+              style={{
+                width: `${Math.min(100, Math.max(0, progress.percent))}%`,
+                background:
+                  progress.status === "error"
+                    ? "linear-gradient(90deg, #f43f5e, #e11d48)"
+                    : "linear-gradient(90deg, #06b6d4, #6366f1, #a855f7, #10b981)",
+                boxShadow: "0 0 12px rgba(6, 182, 212, 0.5)",
+              }}
             />
-            <div className="w-11 h-6 bg-secondary peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary"></div>
-          </label>
-        </div>
-
-        {options.enableClip ? (
-          <div className="space-y-3 pt-2">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {/* Start Time */}
-              <div className="space-y-1.5">
-                <label className="text-xs font-medium text-muted-foreground">Start Timestamp</label>
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    value={options.startTime}
-                    onChange={(e) => setOptions({ ...options, startTime: e.target.value })}
-                    placeholder="00:00:00"
-                    className="flex-1 bg-card border border-border rounded-lg px-3 py-1.5 text-xs text-foreground font-mono focus:outline-none focus:ring-2 focus:ring-primary/50"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setOptions({ ...options, startTime: "00:00:00" })}
-                    className="px-2.5 py-1.5 rounded-lg bg-secondary text-xs font-mono hover:bg-secondary/80 border border-border"
-                  >
-                    00:00:00
-                  </button>
-                </div>
-              </div>
-
-              {/* End Time */}
-              <div className="space-y-1.5">
-                <label className="text-xs font-medium text-muted-foreground">End Timestamp</label>
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    value={options.endTime}
-                    onChange={(e) => setOptions({ ...options, endTime: e.target.value })}
-                    placeholder="00:01:00"
-                    className="flex-1 bg-card border border-border rounded-lg px-3 py-1.5 text-xs text-foreground font-mono focus:outline-none focus:ring-2 focus:ring-primary/50"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (mediaInfo?.duration) {
-                        setOptions({ ...options, endTime: formatTime(mediaInfo.duration) });
-                      }
-                    }}
-                    className="px-2.5 py-1.5 rounded-lg bg-secondary text-xs hover:bg-secondary/80 border border-border"
-                  >
-                    Full End
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            {/* Clip Duration Summary Badge & Precise Re-encode */}
-            <div className="flex flex-wrap items-center justify-between pt-2 border-t border-border/50 text-xs gap-2">
-              <span className="font-semibold text-emerald-500 flex items-center gap-1.5">
-                <Clock className="w-3.5 h-3.5" />
-                Clip Duration: {formatTime(clipDuration)} ({clipDuration}s)
-              </span>
-
-              <label className="inline-flex items-center gap-2 cursor-pointer text-muted-foreground hover:text-foreground">
-                <input
-                  type="checkbox"
-                  checked={options.preciseCut}
-                  onChange={(e) => setOptions({ ...options, preciseCut: e.target.checked })}
-                  className="rounded border-border text-primary focus:ring-primary"
-                />
-                <span>Precise Cut (Re-encode for frame-accurate cuts)</span>
-              </label>
-            </div>
           </div>
-        ) : (
-          <p className="text-xs text-muted-foreground">
-            Full media will be downloaded without any timeframe cut. Enable the toggle above to clip a specific part.
-          </p>
-        )}
-      </div>
-
-      {/* 5. Save Folder Row */}
-      <div className="p-4 rounded-xl border border-border bg-card shadow-sm space-y-2">
-        <label className="text-xs font-semibold text-muted-foreground">Save Location</label>
-        <div className="flex gap-2">
-          <input
-            type="text"
-            value={options.saveFolder}
-            onChange={(e) => setOptions({ ...options, saveFolder: e.target.value })}
-            className="flex-1 bg-secondary/50 border border-border rounded-lg px-3 py-2 text-xs text-foreground font-mono focus:outline-none focus:ring-2 focus:ring-primary/50"
-          />
-          <button
-            onClick={onBrowseFolder}
-            className="px-3 py-2 rounded-lg bg-secondary hover:bg-secondary/80 text-foreground border border-border text-xs font-medium flex items-center gap-1.5 transition-all"
-          >
-            <FolderOpen className="w-3.5 h-3.5" />
-            <span>Browse</span>
-          </button>
-          <button
-            onClick={onOpenFolder}
-            className="px-3 py-2 rounded-lg bg-secondary hover:bg-secondary/80 text-foreground border border-border text-xs font-medium flex items-center gap-1.5 transition-all"
-          >
-            <span>Open Folder</span>
-          </button>
         </div>
-      </div>
 
-      {/* 6. Progress Card */}
-      <div className="p-4 rounded-xl border border-border bg-card shadow-sm space-y-3">
-        <div className="flex items-center justify-between text-xs font-medium">
-          <span className="text-foreground">{progress.text || "Ready to download"}</span>
-          <span className="text-primary font-bold">{progress.percent.toFixed(1)}%</span>
-        </div>
-        <div className="w-full bg-secondary h-2.5 rounded-full overflow-hidden">
-          <div
-            className="bg-gradient-to-r from-blue-600 to-indigo-600 h-full transition-all duration-300 rounded-full"
-            style={{ width: `${Math.min(100, Math.max(0, progress.percent))}%` }}
-          />
-        </div>
-      </div>
-
-      {/* 7. Action Buttons */}
-      <div className="flex gap-3 pt-2">
-        <button
-          onClick={onStartDownload}
-          disabled={isDownloading || !options.url.trim()}
-          className="flex-1 py-3 px-6 rounded-xl bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 disabled:opacity-50 text-white font-bold text-sm shadow-lg shadow-blue-500/25 flex items-center justify-center gap-2 transition-all"
-        >
-          <Download className="w-4 h-4 stroke-[2.5]" />
-          <span>{isDownloading ? "Downloading..." : "Start Download"}</span>
-        </button>
-
-        {isDownloading && (
+        {/* Collapsible Live Terminal Log */}
+        <div className="pt-1 border-t border-slate-100 dark:border-slate-800">
           <button
-            onClick={onCancelDownload}
-            className="py-3 px-6 rounded-xl bg-destructive hover:bg-destructive/90 text-destructive-foreground font-bold text-sm shadow-lg shadow-destructive/25 flex items-center justify-center gap-2 transition-all"
+            type="button"
+            onClick={() => setShowLogs((prev) => !prev)}
+            className="text-[11px] font-bold text-slate-500 hover:text-indigo-600 flex items-center gap-1"
           >
-            <StopCircle className="w-4 h-4" />
-            <span>Cancel</span>
+            <TerminalSquare className="w-3.5 h-3.5" />
+            {showLogs ? "Hide Live Engine Log" : "Show Live Engine Log"}
+            {showLogs ? (
+              <ChevronUp className="w-3 h-3" />
+            ) : (
+              <ChevronDown className="w-3 h-3" />
+            )}
           </button>
-        )}
+
+          {showLogs && (
+            <div className="mt-2 p-3 rounded-xl bg-slate-900 text-cyan-300 font-mono text-[11px] max-h-40 overflow-y-auto space-y-1 border border-slate-700">
+              {logs.length === 0 ? (
+                <div className="text-slate-500">
+                  No log output yet. Paste a link and click Fetch or Start Download.
+                </div>
+              ) : (
+                logs.slice(-60).map((line, i) => (
+                  <div key={i} className="break-all leading-relaxed">
+                    {line}
+                  </div>
+                ))
+              )}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

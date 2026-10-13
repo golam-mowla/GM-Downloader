@@ -1,264 +1,515 @@
-import React, { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { open } from "@tauri-apps/plugin-dialog";
+import {
+  Download,
+  Settings,
+  History,
+  RefreshCw,
+} from "lucide-react";
 import { Header } from "./components/Header";
 import { DownloadTab } from "./components/DownloadTab";
 import { SettingsTab } from "./components/SettingsTab";
-import { UpdatesTab } from "./components/UpdatesTab";
 import { HistoryTab } from "./components/HistoryTab";
-import { LogsTab } from "./components/LogsTab";
-import { DownloadOptions, MediaInfo, DownloadProgress, ToolVersionInfo, DownloadTask } from "./types";
-import { Download, Settings, RefreshCw, Terminal, Clock } from "lucide-react";
-
-// Check if running inside Tauri 2 environment
-const isTauri = () => {
-  return typeof window !== "undefined" && Boolean((window as any).__TAURI_INTERNALS__);
-};
+import { UpdatesTab } from "./components/UpdatesTab";
+import {
+  DownloadMode,
+  DownloadOptions,
+  DownloadProgress,
+  DownloadTask,
+  MediaInfo,
+  ToolVersionInfo,
+} from "./types";
 
 const DEFAULT_OPTIONS: DownloadOptions = {
   url: "",
-  saveFolder: "C:\\Users\\Golam Mowla\\Downloads",
-  mediaType: "Video",
-  format: "MP4",
-  quality: "Best",
+  saveFolder: "D:\\00VideoEditing Tools\\yt-dlp\\Downloads",
+  downloadMode: "video",
+  container: "MP4 (Video)",
+  videoStreamId: "best",
+  audioStreamId: "ba",
+  audioBitrate: "0",
+
+  // Subtitles
+  enableSubtitles: false,
+  subtitleLang: "en,bn",
+  subtitleFormat: "srt",
+  subtitleSaveMode: "separate",
+
+  // Clipper
   enableClip: false,
   startTime: "00:00:00",
-  endTime: "00:01:00",
+  endTime: "00:02:00",
   preciseCut: false,
-  downloadSubtitles: false,
-  embedSubtitles: true,
-  autoSubtitles: false,
-  subtitleLanguages: "en,bn",
-  embedMetadata: true,
-  embedThumbnail: true,
-  cropThumbnail: true,
-  splitChapters: false,
-  sponsorBlock: false,
-  downloader: "Native",
-  aria2Connections: "16",
-  speedLimitKb: "0",
+
+  // Parabolic Options - UI
+  theme: "Light (White Neon)",
+  translationLanguage: "Default (en-US)",
+  receivePreviewUpdates: false,
+  preventSuspend: false,
+  historyLength: "One Month",
+
+  // Parabolic Options - Downloads
+  maxActiveDownloads: 5,
   overwriteFiles: true,
-  cookiesBrowser: "None",
-  cookiesFile: "",
+  includeMediaId: false,
+  includeAutoSubtitles: true,
+  includeSuperRes: false,
+  preferredVideoCodec: "Any",
+  preferredAudioCodec: "Any",
+  preferredSubtitleFormat: "Any",
+  preferredFps: "Any (Highest)",
+
+  // Parabolic Options - Downloader
+  usePartFiles: true,
+  sponsorBlock: false,
+  limitSpeed: false,
+  speedLimitKb: 1024,
   proxy: "",
+  cookiesFile: "",
+  cookiesBrowser: "None",
+  useAria2c: false,
+  aria2Connections: 16,
+  ytdlpDiscoveryArgs: "",
+  ytdlpDownloadArgs: "",
+
+  // Parabolic Options - Converter
+  translateMetadata: false,
+  embedMetadata: true,
+  embedThumbnails: true,
+  cropAudioThumbnails: false,
+  embedChapters: false,
+  splitChapters: false,
+  embedSubtitlesGlobal: true,
+  ffmpegThreads: 4,
+  postProcessorArgs: "",
 };
 
-export const App: React.FC = () => {
-  const [theme, setTheme] = useState<"dark" | "light">("dark");
-  const [activeTab, setActiveTab] = useState<"download" | "history" | "settings" | "updates" | "logs">("download");
+type ActiveTab = "download" | "options" | "history" | "updates";
+
+export function App() {
+  const [activeTab, setActiveTab] = useState<ActiveTab>("download");
 
   const [options, setOptions] = useState<DownloadOptions>(() => {
     try {
-      const saved = localStorage.getItem("gm_downloader_opts");
-      if (saved) return { ...DEFAULT_OPTIONS, ...JSON.parse(saved) };
-    } catch {}
+      const saved = localStorage.getItem("gm_downloader_options_v2");
+      if (saved) {
+        return { ...DEFAULT_OPTIONS, ...JSON.parse(saved) };
+      }
+    } catch {
+      // ignore
+    }
     return DEFAULT_OPTIONS;
   });
 
-  // Persistent Download Tasks (Survives PC restart & power outages)
   const [tasks, setTasks] = useState<DownloadTask[]>(() => {
     try {
-      const saved = localStorage.getItem("gm_downloader_tasks");
+      const saved = localStorage.getItem("gm_downloader_history_v2");
       if (saved) {
         const parsed: DownloadTask[] = JSON.parse(saved);
-        // Mark any previously 'downloading' task as 'interrupted' when app restarts
+        // Any task that was still "downloading" when PC shut down becomes "interrupted"
         return parsed.map((t) =>
-          t.status === "downloading" ? { ...t, status: "interrupted" as const } : t
+          t.status === "downloading" ? { ...t, status: "interrupted" } : t
         );
       }
-    } catch {}
+    } catch {
+      // ignore
+    }
     return [];
   });
 
-  // Save tasks to localStorage whenever updated
-  useEffect(() => {
-    try {
-      localStorage.setItem("gm_downloader_tasks", JSON.stringify(tasks));
-    } catch {}
-  }, [tasks]);
-
   const [mediaInfo, setMediaInfo] = useState<MediaInfo | null>(null);
-  const [fetching, setFetching] = useState(false);
-  const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
+  const [isFetching, setIsFetching] = useState(false);
+  const [fetchError, setFetchError] = useState<string | null>(null);
+
   const [progress, setProgress] = useState<DownloadProgress>({
     percent: 0,
-    text: "Ready to download",
+    text: "Ready — Paste a link and click Fetch Link Qualities or Start Download",
     status: "idle",
   });
+  const [logs, setLogs] = useState<string[]>([]);
 
-  const [logs, setLogs] = useState<string[]>([
-    `[${new Date().toLocaleTimeString()}] GM Downloader initialized.`,
-    `[${new Date().toLocaleTimeString()}] Auto-Resume & Power-Loss recovery engine active.`,
+  const [tools, setTools] = useState<ToolVersionInfo[]>([
+    {
+      name: "yt-dlp",
+      installedVersion: "Checking...",
+      latestVersion: "Latest",
+      hasUpdate: false,
+    },
+    {
+      name: "Deno",
+      installedVersion: "Checking...",
+      latestVersion: "Latest",
+      hasUpdate: false,
+    },
+    {
+      name: "FFmpeg",
+      installedVersion: "Checking...",
+      latestVersion: "Latest",
+      hasUpdate: false,
+    },
   ]);
-
+  const [checkingTools, setCheckingTools] = useState(false);
   const [updateLogs, setUpdateLogs] = useState<string[]>([]);
-  const [successMessage, setSuccessMessage] = useState<string | null>(null);
-  const [checkingUpdates, setCheckingUpdates] = useState(false);
+  const [updateSuccess, setUpdateSuccess] = useState<string | null>(null);
 
-  const [tools, setTools] = useState<{
-    ytdlp: ToolVersionInfo;
-    deno: ToolVersionInfo;
-    ffmpeg: ToolVersionInfo;
-  }>({
-    ytdlp: { name: "yt-dlp", installedVersion: "2026.08.19", latestVersion: "2026.08.19", hasUpdate: false },
-    deno: { name: "Deno", installedVersion: "2.9.7", latestVersion: "2.9.7", hasUpdate: false },
-    ffmpeg: { name: "FFmpeg", installedVersion: "N-126374", latestVersion: "N-126374", hasUpdate: false },
-  });
+  const currentTaskIdRef = useRef<string | null>(null);
 
+  // Sync theme to document root
   useEffect(() => {
-    if (theme === "dark") {
-      document.documentElement.classList.add("dark");
+    const root = document.documentElement;
+    if (options.theme === "Dark") {
+      root.classList.add("dark");
+    } else if (options.theme === "Light (White Neon)") {
+      root.classList.remove("dark");
     } else {
-      document.documentElement.classList.remove("dark");
+      const prefersDark = window.matchMedia(
+        "(prefers-color-scheme: dark)"
+      ).matches;
+      root.classList.toggle("dark", prefersDark);
     }
-  }, [theme]);
-
-  const addLog = (msg: string) => {
-    setLogs((prev) => [...prev, `[${new Date().toLocaleTimeString()}] ${msg}`]);
-  };
-
-  const addUpdLog = (msg: string) => {
-    setUpdateLogs((prev) => [...prev, `[${new Date().toLocaleTimeString()}] ${msg}`]);
-  };
-
-  const handleSavePreferences = () => {
     try {
-      localStorage.setItem("gm_downloader_opts", JSON.stringify(options));
-      addLog("Preferences saved successfully.");
-      alert("Preferences saved successfully!");
-    } catch {}
-  };
+      localStorage.setItem("gm_downloader_options_v2", JSON.stringify(options));
+    } catch {
+      // ignore
+    }
+  }, [options]);
 
-  // Fetch Media Information
-  const handleFetchInfo = async (url: string) => {
-    if (!url.trim()) return;
-    setFetching(true);
-    addLog(`Fetching stream info for: ${url}`);
-
+  // Persist history
+  useEffect(() => {
     try {
-      if (isTauri()) {
-        const { invoke } = await import("@tauri-apps/api/core");
-        const res: any = await invoke("fetch_media_info", {
-          url,
-          cookiesBrowser: options.cookiesBrowser,
-          proxy: options.proxy,
-        });
-        setMediaInfo(res);
-        addLog(`Info fetched: "${res.title}" (${res.duration}s)`);
-      } else {
-        setTimeout(() => {
-          setMediaInfo({
-            title: "Sample Web Video for GM Downloader Preview",
-            uploader: "Channel Official",
-            duration: 420,
-            thumbnail: "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=600&auto=format&fit=crop&q=80",
-            videoStreams: [
-              { id: "137", label: "1080p | H.264 | 60fps | mp4 | 65.2 MiB", height: 1080, fps: 60 },
-              { id: "136", label: "720p | H.264 | 30fps | mp4 | 32.1 MiB", height: 720, fps: 30 },
-            ],
-            audioStreams: [
-              { id: "140", label: "128k | en | MP4A | m4a | 6.5 MiB" },
-              { id: "251", label: "160k | en | OPUS | webm | 8.2 MiB" },
-            ],
+      localStorage.setItem("gm_downloader_history_v2", JSON.stringify(tasks));
+    } catch {
+      // ignore
+    }
+  }, [tasks]);
+
+  // Subscribe to Tauri Backend Events + Initial Tool Version Check
+  useEffect(() => {
+    let unlistenProgress: (() => void) | undefined;
+    let unlistenLog: (() => void) | undefined;
+
+    const setupListeners = async () => {
+      try {
+        unlistenProgress = await listen<{
+          percent: number;
+          text: string;
+          speed: string;
+          eta: string;
+          status: string;
+        }>("download-progress", (event) => {
+          const p = event.payload;
+          setProgress({
+            percent: p.percent,
+            text: p.text,
+            speed: p.speed,
+            eta: p.eta,
+            status: (p.status as DownloadProgress["status"]) || "downloading",
           });
-          setFetching(false);
-          addLog("Stream format info loaded successfully.");
-        }, 800);
+
+          if (currentTaskIdRef.current) {
+            const tid = currentTaskIdRef.current;
+            setTasks((prev) =>
+              prev.map((t) =>
+                t.id === tid
+                  ? {
+                      ...t,
+                      percent: p.percent,
+                      speed: p.speed,
+                      status:
+                        p.status === "completed" ? "completed" : "downloading",
+                    }
+                  : t
+              )
+            );
+          }
+        });
+
+        unlistenLog = await listen<string>("download-log", (event) => {
+          setLogs((prev) => [...prev.slice(-120), event.payload]);
+        });
+      } catch {
+        // Running in browser preview mode
       }
-    } catch (err: any) {
-      addLog(`[ERROR] Fetch failed: ${err}`);
-      setFetching(false);
-    }
-  };
-
-  // Start Download (With Task Queue Tracking)
-  const handleStartDownload = async (customOpts?: DownloadOptions) => {
-    const optsToUse = customOpts || options;
-    const taskId = Date.now().toString();
-    setActiveTaskId(taskId);
-
-    const title = mediaInfo?.title || optsToUse.url;
-    const newTask: DownloadTask = {
-      id: taskId,
-      title,
-      url: optsToUse.url,
-      thumbnail: mediaInfo?.thumbnail,
-      format: optsToUse.format,
-      quality: optsToUse.quality,
-      saveFolder: optsToUse.saveFolder,
-      percent: 0,
-      status: "downloading",
-      createdAt: Date.now(),
-      options: optsToUse,
     };
 
-    setTasks((prev) => [newTask, ...prev.filter((t) => t.url !== optsToUse.url)]);
-    addLog(`Task created [${title}]. Resuming partial streams if existing.`);
-    setProgress({ percent: 5, text: "Connecting to media stream (checking existing partial chunks)...", status: "downloading" });
+    setupListeners();
+    handleCheckToolUpdates();
 
-    if (isTauri()) {
-      try {
-        const { invoke } = await import("@tauri-apps/api/core");
-        await invoke("start_download", { options: optsToUse });
-        setTasks((prev) =>
-          prev.map((t) => (t.id === taskId ? { ...t, percent: 100, status: "completed" } : t))
-        );
-      } catch (err: any) {
-        addLog(`[ERROR] Download error: ${err}`);
-        setProgress({ percent: 0, text: `Failed: ${err}`, status: "error" });
-        setTasks((prev) =>
-          prev.map((t) => (t.id === taskId ? { ...t, status: "interrupted", error: String(err) } : t))
+    return () => {
+      if (unlistenProgress) unlistenProgress();
+      if (unlistenLog) unlistenLog();
+    };
+  }, []);
+
+  const handleCheckToolUpdates = async () => {
+    setCheckingTools(true);
+    try {
+      const res = await invoke<ToolVersionInfo[]>("check_tool_updates");
+      if (res && Array.isArray(res)) {
+        setTools(res);
+      }
+    } catch {
+      // Fallback if running outside Tauri
+    } finally {
+      setCheckingTools(false);
+    }
+  };
+
+  const handleUpdateTool = async (toolName: string) => {
+    setUpdateSuccess(null);
+    setTools((prev) =>
+      prev.map((t) => (t.name === toolName ? { ...t, isUpdating: true } : t))
+    );
+    setUpdateLogs((prev) => [
+      ...prev,
+      `[${new Date().toLocaleTimeString()}] Starting update for ${toolName}...`,
+    ]);
+
+    try {
+      const msg = await invoke<string>("update_tool", { toolName });
+      setUpdateLogs((prev) => [
+        ...prev,
+        `[${new Date().toLocaleTimeString()}] ✔ ${msg}`,
+      ]);
+      setUpdateSuccess(msg);
+      await handleCheckToolUpdates();
+    } catch (err: any) {
+      setUpdateLogs((prev) => [
+        ...prev,
+        `[${new Date().toLocaleTimeString()}] ❌ Error updating ${toolName}: ${String(
+          err
+        )}`,
+      ]);
+    } finally {
+      setTools((prev) =>
+        prev.map((t) => (t.name === toolName ? { ...t, isUpdating: false } : t))
+      );
+    }
+  };
+
+  const handleUpdateAllTools = async () => {
+    for (const t of tools) {
+      await handleUpdateTool(t.name);
+    }
+  };
+
+  const handleFetchInfo = async () => {
+    const url = options.url.trim();
+    if (!url) return;
+
+    setIsFetching(true);
+    setFetchError(null);
+    setMediaInfo(null);
+    setProgress({
+      percent: 10,
+      text: "Inspecting link and discovering all available qualities, codecs & subtitles...",
+      status: "fetching",
+    });
+
+    try {
+      const info = await invoke<MediaInfo>("fetch_media_info", {
+        url,
+        cookiesBrowser: options.cookiesBrowser,
+        cookiesFile: options.cookiesFile,
+        proxy: options.proxy,
+        discoveryArgs: options.ytdlpDiscoveryArgs,
+      });
+
+      setMediaInfo(info);
+
+      // Default to highest video stream and highest audio stream
+      setOptions((prev) => ({
+        ...prev,
+        videoStreamId: "best",
+        audioStreamId: "ba",
+        subtitleLang:
+          info.subtitles && info.subtitles.length > 0
+            ? info.subtitles[0].code
+            : prev.subtitleLang,
+      }));
+
+      setProgress({
+        percent: 0,
+        text: `✔ Fetched "${info.title}" (${info.videoStreams.length} Video streams, ${info.audioStreams.length} Audio streams, ${info.subtitles.length} Subtitles)`,
+        status: "idle",
+      });
+    } catch (err: any) {
+      const errMsg = typeof err === "string" ? err : err?.message || String(err);
+      setFetchError(errMsg);
+      setProgress({
+        percent: 0,
+        text: "Could not fetch link metadata. Check error message above.",
+        status: "error",
+      });
+    } finally {
+      setIsFetching(false);
+    }
+  };
+
+  const handleBrowseFolder = async () => {
+    try {
+      const selected = await open({
+        directory: true,
+        multiple: false,
+        defaultPath: options.saveFolder,
+      });
+      if (selected && typeof selected === "string") {
+        setOptions((prev) => ({ ...prev, saveFolder: selected }));
+      }
+    } catch {
+      // ignore
+    }
+  };
+
+  const handleBrowseCookiesFile = async () => {
+    try {
+      const selected = await open({
+        directory: false,
+        multiple: false,
+        filters: [{ name: "Cookies TXT", extensions: ["txt"] }],
+      });
+      if (selected && typeof selected === "string") {
+        setOptions((prev) => ({ ...prev, cookiesFile: selected }));
+      }
+    } catch {
+      // ignore
+    }
+  };
+
+  const handleOpenFolder = async (folderPath?: string) => {
+    const target = folderPath || options.saveFolder;
+    try {
+      await invoke("open_folder", { path: target });
+    } catch {
+      // ignore
+    }
+  };
+
+  const runDownloadWithOptions = async (
+    effectiveOptions: DownloadOptions,
+    existingTaskId?: string
+  ) => {
+    const url = effectiveOptions.url.trim();
+    if (!url) return;
+
+    const taskId = existingTaskId || `task_${Date.now()}`;
+    currentTaskIdRef.current = taskId;
+
+    const selectedVideoLabel =
+      effectiveOptions.downloadMode === "subtitles"
+        ? `Subtitles (${effectiveOptions.subtitleFormat.toUpperCase()})`
+        : effectiveOptions.downloadMode === "audio"
+        ? `Audio (${effectiveOptions.audioBitrate === "0" ? "320kbps" : effectiveOptions.audioBitrate})`
+        : mediaInfo?.videoStreams.find(
+            (s) => s.id === effectiveOptions.videoStreamId
+          )?.label || "Best Quality";
+
+    const taskTitle =
+      mediaInfo?.title ||
+      tasks.find((t) => t.id === existingTaskId)?.title ||
+      url;
+
+    const newTask: DownloadTask = {
+      id: taskId,
+      title: taskTitle,
+      url,
+      thumbnail: mediaInfo?.thumbnail,
+      container: effectiveOptions.container,
+      qualityLabel: selectedVideoLabel.split("•")[0].trim(),
+      saveFolder: effectiveOptions.saveFolder,
+      percent: 2,
+      status: "downloading",
+      createdAt: Date.now(),
+      options: effectiveOptions,
+    };
+
+    setTasks((prev) => {
+      const exists = prev.some((t) => t.id === taskId);
+      if (exists) {
+        return prev.map((t) =>
+          t.id === taskId ? { ...t, status: "downloading", error: undefined } : t
         );
       }
-    } else {
-      // Browser simulation
-      let p = 5;
-      const interval = setInterval(() => {
-        p += 15;
-        if (p >= 100) {
-          clearInterval(interval);
-          setProgress({ percent: 100, text: "Download Completed Successfully! ✔", status: "completed" });
-          setTasks((prev) =>
-            prev.map((t) => (t.id === taskId ? { ...t, percent: 100, status: "completed" } : t))
-          );
-          addLog("Download finished. Saved to disk.");
-        } else {
-          setProgress({
-            percent: p,
-            text: `${p}% | 12.4 MiB / 48.0 MiB | 5.2 MiB/s | ETA: 00:00:08`,
-            status: "downloading",
-          });
-          setTasks((prev) =>
-            prev.map((t) => (t.id === taskId ? { ...t, percent: p, speed: "5.2 MiB/s" } : t))
-          );
-        }
-      }, 500);
+      return [newTask, ...prev];
+    });
+
+    setLogs([]);
+    setProgress({
+      percent: 2,
+      text: "Starting download engine...",
+      status: "downloading",
+    });
+
+    try {
+      await invoke<string>("start_download", {
+        options: effectiveOptions,
+      });
+
+      setProgress({
+        percent: 100,
+        text: "Download Completed Successfully! ✔",
+        status: "completed",
+      });
+
+      setTasks((prev) =>
+        prev.map((t) =>
+          t.id === taskId ? { ...t, percent: 100, status: "completed" } : t
+        )
+      );
+    } catch (err: any) {
+      const msg = typeof err === "string" ? err : err?.message || String(err);
+      const isPaused = msg.toLowerCase().includes("paused") || msg.toLowerCase().includes("cancelled");
+
+      setProgress({
+        percent: progress.percent,
+        text: isPaused
+          ? "⏸ Download Paused — Partial .part file saved for instant resume"
+          : `Error: ${msg}`,
+        status: isPaused ? "paused" : "error",
+      });
+
+      setTasks((prev) =>
+        prev.map((t) =>
+          t.id === taskId
+            ? {
+                ...t,
+                status: isPaused ? "paused" : "interrupted",
+                error: msg,
+              }
+            : t
+        )
+      );
+    } finally {
+      currentTaskIdRef.current = null;
     }
+  };
+
+  const handleStartDownload = (overrideMode?: DownloadMode) => {
+    const effectiveOptions: DownloadOptions = overrideMode
+      ? {
+          ...options,
+          downloadMode: overrideMode,
+          enableSubtitles: overrideMode === "subtitles" ? true : options.enableSubtitles,
+        }
+      : options;
+
+    runDownloadWithOptions(effectiveOptions);
   };
 
   const handleCancelDownload = async () => {
-    addLog("Cancelling download. Preserving .part file for resume.");
-    setProgress({ percent: 0, text: "Download Paused / Cancelled", status: "paused" });
-    if (activeTaskId) {
-      setTasks((prev) =>
-        prev.map((t) => (t.id === activeTaskId ? { ...t, status: "paused" } : t))
-      );
-    }
-    if (isTauri()) {
-      const { invoke } = await import("@tauri-apps/api/core");
+    try {
       await invoke("cancel_download");
+    } catch {
+      // ignore
     }
   };
 
-  // Resume an interrupted/paused task
   const handleResumeTask = (task: DownloadTask) => {
-    addLog(`Resuming task: "${task.title}" using yt-dlp continue engine...`);
     setActiveTab("download");
     setOptions(task.options);
-    handleStartDownload(task.options);
-  };
-
-  const handlePauseTask = (id: string) => {
-    setTasks((prev) => prev.map((t) => (t.id === id ? { ...t, status: "paused" } : t)));
-    handleCancelDownload();
+    runDownloadWithOptions(task.options, task.id);
   };
 
   const handleDeleteTask = (id: string) => {
@@ -269,158 +520,104 @@ export const App: React.FC = () => {
     setTasks((prev) => prev.filter((t) => t.status !== "completed"));
   };
 
-  const handleBrowseFolder = async () => {
-    if (isTauri()) {
-      try {
-        const { open } = await import("@tauri-apps/plugin-dialog");
-        const selected = await open({ directory: true, multiple: false });
-        if (selected && typeof selected === "string") {
-          setOptions((prev) => ({ ...prev, saveFolder: selected }));
-        }
-      } catch {}
-    }
-  };
-
-  const handleOpenFolder = async (path?: string) => {
-    const target = path || options.saveFolder;
-    if (isTauri()) {
-      try {
-        const { invoke } = await import("@tauri-apps/api/core");
-        await invoke("open_folder", { path: target });
-      } catch {}
-    }
-  };
-
-  const handleCheckUpdates = async () => {
-    setCheckingUpdates(true);
-    addUpdLog("Checking for tool updates (yt-dlp, Deno, FFmpeg)...");
-
-    setTimeout(() => {
-      setCheckingUpdates(false);
-      addUpdLog("yt-dlp: v2026.08.19 (Up to date)");
-      addUpdLog("Deno: v2.9.7 (Up to date)");
-      addUpdLog("FFmpeg: N-126374 (Up to date)");
-      setSuccessMessage("All core engines (yt-dlp, Deno, FFmpeg) are currently up to date!");
-      setTimeout(() => setSuccessMessage(null), 6000);
-    }, 1200);
-  };
-
-  const handleUpdateTool = (toolName: string) => {
-    addUpdLog(`Updating ${toolName}...`);
-    setTimeout(() => {
-      addUpdLog(`${toolName} updated successfully to the latest release!`);
-      setSuccessMessage(`${toolName} has been updated successfully to the latest version!`);
-      setTimeout(() => setSuccessMessage(null), 6000);
-    }, 1500);
-  };
-
-  const handleUpdateAll = () => {
-    addUpdLog("--- Starting Full Engine Update ---");
-    setTimeout(() => {
-      addUpdLog("yt-dlp updated ✔");
-      addUpdLog("Deno JS runtime updated ✔");
-      addUpdLog("FFmpeg updated ✔");
-      setSuccessMessage("All tools (yt-dlp, Deno, and FFmpeg) have been successfully updated!");
-      setTimeout(() => setSuccessMessage(null), 6000);
-    }, 2000);
-  };
+  const activeOrPausedCount = tasks.filter(
+    (t) => t.status === "downloading" || t.status === "paused" || t.status === "interrupted"
+  ).length;
 
   return (
-    <div className="min-h-screen flex flex-col bg-background text-foreground">
+    <div className="min-h-screen flex flex-col">
+      {/* Top Header with Parrot Logo */}
       <Header
-        theme={theme}
-        setTheme={setTheme}
         tools={tools}
-        onNavigateToUpdates={() => setActiveTab("updates")}
+        onOpenUpdates={() => setActiveTab("updates")}
       />
 
-      {/* Main Tab Navigation Bar */}
-      <div className="border-b border-border bg-card/40 px-6 py-2.5 flex items-center justify-between">
-        <div className="flex items-center space-x-1.5 bg-secondary/60 p-1 rounded-xl border border-border">
+      {/* Main Content Container */}
+      <main className="flex-1 max-w-6xl w-full mx-auto px-4 sm:px-6 py-4 space-y-4">
+        {/* Navigation Tabs (Renamed "Options" per User Request) */}
+        <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 dark:border-slate-800 pb-3">
           <button
+            type="button"
             onClick={() => setActiveTab("download")}
-            className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all ${
+            className={`px-4 py-2.5 rounded-xl text-xs sm:text-sm font-extrabold flex items-center gap-2 transition-all ${
               activeTab === "download"
-                ? "bg-primary text-primary-foreground shadow-sm"
-                : "text-muted-foreground hover:text-foreground"
+                ? "neon-btn-primary"
+                : "bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-800 hover:border-cyan-400"
             }`}
           >
-            <Download className="w-3.5 h-3.5" />
-            <span>Download & Clip</span>
+            <Download className="w-4 h-4" />
+            Download &amp; Clip
           </button>
 
           <button
-            onClick={() => setActiveTab("history")}
-            className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all relative ${
-              activeTab === "history"
-                ? "bg-primary text-primary-foreground shadow-sm"
-                : "text-muted-foreground hover:text-foreground"
+            type="button"
+            onClick={() => setActiveTab("options")}
+            className={`px-4 py-2.5 rounded-xl text-xs sm:text-sm font-extrabold flex items-center gap-2 transition-all ${
+              activeTab === "options"
+                ? "neon-btn-primary"
+                : "bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-800 hover:border-cyan-400"
             }`}
           >
-            <Clock className="w-3.5 h-3.5" />
-            <span>Queue & History</span>
-            {tasks.length > 0 && (
-              <span className="ml-1 px-1.5 py-0.2 rounded-full bg-secondary text-[10px] font-bold border border-border">
-                {tasks.length}
+            <Settings className="w-4 h-4" />
+            Options
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveTab("history")}
+            className={`px-4 py-2.5 rounded-xl text-xs sm:text-sm font-extrabold flex items-center gap-2 transition-all ${
+              activeTab === "history"
+                ? "neon-btn-primary"
+                : "bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-800 hover:border-cyan-400"
+            }`}
+          >
+            <History className="w-4 h-4" />
+            Queue &amp; History
+            {activeOrPausedCount > 0 && (
+              <span className="px-1.5 py-0.5 text-[10px] rounded-full bg-amber-400 text-slate-950 font-black">
+                {activeOrPausedCount}
               </span>
             )}
           </button>
 
           <button
-            onClick={() => setActiveTab("settings")}
-            className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all ${
-              activeTab === "settings"
-                ? "bg-primary text-primary-foreground shadow-sm"
-                : "text-muted-foreground hover:text-foreground"
-            }`}
-          >
-            <Settings className="w-3.5 h-3.5" />
-            <span>Parabolic Options</span>
-          </button>
-
-          <button
+            type="button"
             onClick={() => setActiveTab("updates")}
-            className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all relative ${
+            className={`px-4 py-2.5 rounded-xl text-xs sm:text-sm font-extrabold flex items-center gap-2 transition-all ${
               activeTab === "updates"
-                ? "bg-primary text-primary-foreground shadow-sm"
-                : "text-muted-foreground hover:text-foreground"
+                ? "neon-btn-primary"
+                : "bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-800 hover:border-cyan-400"
             }`}
           >
-            <RefreshCw className="w-3.5 h-3.5" />
-            <span>Tool Updates</span>
-            {(tools.ytdlp.hasUpdate || tools.deno.hasUpdate || tools.ffmpeg.hasUpdate) && (
-              <span className="w-2 h-2 rounded-full bg-amber-500 absolute -top-0.5 -right-0.5 animate-ping" />
-            )}
-          </button>
-
-          <button
-            onClick={() => setActiveTab("logs")}
-            className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all ${
-              activeTab === "logs"
-                ? "bg-primary text-primary-foreground shadow-sm"
-                : "text-muted-foreground hover:text-foreground"
-            }`}
-          >
-            <Terminal className="w-3.5 h-3.5" />
-            <span>Engine Logs</span>
+            <RefreshCw className="w-4 h-4" />
+            Tool Updater
           </button>
         </div>
-      </div>
 
-      {/* Main Content Area */}
-      <main className="flex-1 p-6 overflow-y-auto">
+        {/* Active Tab View */}
         {activeTab === "download" && (
           <DownloadTab
             options={options}
             setOptions={setOptions}
             mediaInfo={mediaInfo}
-            fetching={fetching}
+            isFetching={isFetching}
+            fetchError={fetchError}
             onFetchInfo={handleFetchInfo}
-            onStartDownload={() => handleStartDownload()}
-            onCancelDownload={handleCancelDownload}
             onBrowseFolder={handleBrowseFolder}
             onOpenFolder={() => handleOpenFolder()}
+            onStartDownload={handleStartDownload}
+            onCancelDownload={handleCancelDownload}
             progress={progress}
+            logs={logs}
+          />
+        )}
+
+        {activeTab === "options" && (
+          <SettingsTab
+            options={options}
+            setOptions={setOptions}
+            onBrowseCookiesFile={handleBrowseCookiesFile}
+            onResetDefaults={() => setOptions(DEFAULT_OPTIONS)}
           />
         )}
 
@@ -428,44 +625,25 @@ export const App: React.FC = () => {
           <HistoryTab
             tasks={tasks}
             onResumeTask={handleResumeTask}
-            onPauseTask={handlePauseTask}
+            onPauseTask={() => handleCancelDownload()}
             onDeleteTask={handleDeleteTask}
             onClearCompleted={handleClearCompleted}
-            onOpenFolder={(path) => handleOpenFolder(path)}
-          />
-        )}
-
-        {activeTab === "settings" && (
-          <SettingsTab
-            options={options}
-            setOptions={setOptions}
-            onSavePreferences={handleSavePreferences}
+            onOpenFolder={(p) => handleOpenFolder(p)}
           />
         )}
 
         {activeTab === "updates" && (
           <UpdatesTab
             tools={tools}
-            checking={checkingUpdates}
-            onCheckUpdates={handleCheckUpdates}
+            checking={checkingTools}
+            onCheckUpdates={handleCheckToolUpdates}
             onUpdateTool={handleUpdateTool}
-            onUpdateAll={handleUpdateAll}
+            onUpdateAll={handleUpdateAllTools}
             updateLogs={updateLogs}
-            successMessage={successMessage}
-          />
-        )}
-
-        {activeTab === "logs" && (
-          <LogsTab
-            logs={logs}
-            onClearLogs={() => setLogs([])}
-            onCopyLogs={() => {
-              navigator.clipboard.writeText(logs.join("\n"));
-              alert("Logs copied to clipboard.");
-            }}
+            successMessage={updateSuccess}
           />
         )}
       </main>
     </div>
   );
-};
+}
