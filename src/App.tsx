@@ -21,10 +21,97 @@ import {
   DownloadProgress,
   DownloadTask,
   MediaInfo,
+  SubtitleTrack,
   ToolVersionInfo,
 } from "./types";
 
 const CURRENT_APP_VERSION = "2.0.0";
+
+const parseRawYtdlJsonToMediaInfo = (raw: any): MediaInfo => {
+  const formats = Array.isArray(raw.formats) ? raw.formats : [];
+
+  const videoStreams = formats
+    .filter((f: any) => f.vcodec && f.vcodec !== "none")
+    .map((f: any) => ({
+      id: String(f.format_id),
+      label: `${f.resolution || (f.height ? `${f.height}p` : "Video")} • ${f.ext || "mp4"} • ${(f.vcodec || "").split(".")[0]}`,
+      ext: f.ext || "mp4",
+      resolution: f.resolution || (f.height ? `${f.height}p` : "HD"),
+      fps: f.fps || 30,
+      filesize: f.filesize
+        ? `${(f.filesize / (1024 * 1024)).toFixed(1)} MB`
+        : f.filesize_approx
+        ? `~${(f.filesize_approx / (1024 * 1024)).toFixed(1)} MB`
+        : "Dynamic",
+      vcodec: f.vcodec || "",
+      acodec: f.acodec || "",
+    }));
+
+  const audioStreams = formats
+    .filter(
+      (f: any) =>
+        f.acodec &&
+        f.acodec !== "none" &&
+        (!f.vcodec || f.vcodec === "none")
+    )
+    .map((f: any) => ({
+      id: String(f.format_id),
+      label: `${f.ext || "audio"} • ${f.abr ? `${Math.round(f.abr)}kbps` : "Audio"} • ${(f.acodec || "").split(".")[0]}`,
+      ext: f.ext || "m4a",
+      resolution: "Audio only",
+      fps: 0,
+      filesize: f.filesize
+        ? `${(f.filesize / (1024 * 1024)).toFixed(1)} MB`
+        : "Dynamic",
+      vcodec: "none",
+      acodec: f.acodec || "",
+    }));
+
+  const subs: SubtitleTrack[] = Object.keys(raw.subtitles || {}).map((lang) => ({
+    code: lang,
+    name: lang.toUpperCase(),
+    isAuto: false,
+  }));
+
+  return {
+    id: raw.id || "media",
+    title: raw.title || "Video",
+    duration: typeof raw.duration === "number" ? raw.duration : 0,
+    thumbnail: raw.thumbnail || "",
+    uploader: raw.uploader || raw.channel || "",
+    videoStreams:
+      videoStreams.length > 0
+        ? videoStreams
+        : [
+            {
+              id: "best",
+              label: "Best Quality (Auto)",
+              ext: "mp4",
+              resolution: "Best",
+              fps: 60,
+              filesize: "Auto",
+              vcodec: "",
+              acodec: "",
+            },
+          ],
+    audioStreams:
+      audioStreams.length > 0
+        ? audioStreams
+        : [
+            {
+              id: "ba",
+              label: "Best Audio (Auto)",
+              ext: "mp3",
+              resolution: "Audio only",
+              fps: 0,
+              filesize: "Auto",
+              vcodec: "none",
+              acodec: "",
+            },
+          ],
+    subtitles: subs,
+  };
+};
 
 const DEFAULT_OPTIONS: DownloadOptions = {
   url: "",
@@ -234,6 +321,79 @@ export function App() {
       } catch {
         // Preview mode
       }
+      // Android bridge callbacks
+      (window as any).onAndroidProgress = (
+        tid: string,
+        percent: number,
+        eta: number,
+        line: string
+      ) => {
+        const p = Math.round(percent);
+        setProgress({
+          percent: p,
+          text: line || `Downloading... ${p}%`,
+          speed: "",
+          eta: eta > 0 ? `${eta}s` : "",
+          status: p >= 100 ? "completed" : "downloading",
+        });
+
+        const currentTid = currentTaskIdRef.current || tid;
+        setTasks((prev) =>
+          prev.map((t) =>
+            t.id === currentTid
+              ? {
+                  ...t,
+                  percent: p,
+                  status: p >= 100 ? "completed" : "downloading",
+                }
+              : t
+          )
+        );
+      };
+
+      (window as any).onAndroidLog = (line: string) => {
+        setLogs((prev) => [...prev.slice(-120), line]);
+      };
+
+      (window as any).onAndroidComplete = (
+        tid: string,
+        success: boolean,
+        err: string | null
+      ) => {
+        setProgress({
+          percent: success ? 100 : 0,
+          text: success
+            ? "✔ Download completed successfully to Downloads/GM-Downloader"
+            : `❌ Download Failed: ${err}`,
+          status: success ? "completed" : "error",
+        });
+
+        const currentTid = currentTaskIdRef.current || tid;
+        setTasks((prev) =>
+          prev.map((t) =>
+            t.id === currentTid
+              ? {
+                  ...t,
+                  percent: success ? 100 : t.percent,
+                  status: success ? "completed" : "interrupted",
+                  error: err || undefined,
+                }
+              : t
+          )
+        );
+        currentTaskIdRef.current = null;
+      };
+
+      if ((window as any).GMAndroidBridge?.getDownloadPath?.()) {
+        try {
+          const androidPath = (window as any).GMAndroidBridge.getDownloadPath();
+          if (androidPath) {
+            setOptions((prev) => ({ ...prev, saveFolder: androidPath }));
+          }
+        } catch {
+          // ignore
+        }
+      }
     };
 
     setupListeners();
@@ -246,6 +406,31 @@ export function App() {
   }, []);
 
   const handleCheckAllUpdates = async () => {
+    if ((window as any).GMAndroidBridge?.isAndroidAvailable?.()) {
+      setTools([
+        {
+          name: "yt-dlp",
+          installedVersion: "v0.18.1 (Native Android)",
+          latestVersion: "Up to date",
+          hasUpdate: false,
+        },
+        {
+          name: "Python",
+          installedVersion: "v3.10 (Native Android)",
+          latestVersion: "Up to date",
+          hasUpdate: false,
+        },
+        {
+          name: "FFmpeg",
+          installedVersion: "v6.0-android",
+          latestVersion: "Up to date",
+          hasUpdate: false,
+        },
+      ]);
+      setCheckingTools(false);
+      return;
+    }
+
     setCheckingTools(true);
     // 1. Check tools from backend
     try {
@@ -329,13 +514,31 @@ export function App() {
     });
 
     try {
-      const info = await invoke<MediaInfo>("fetch_media_info", {
-        url,
-        cookiesBrowser: options.cookiesBrowser,
-        cookiesFile: options.cookiesFile,
-        proxy: options.proxy,
-        discoveryArgs: options.ytdlpDiscoveryArgs,
-      });
+      let info: MediaInfo;
+      if ((window as any).GMAndroidBridge?.isAndroidAvailable?.()) {
+        info = await new Promise<MediaInfo>((resolve, reject) => {
+          const callbackId = "cb_" + Math.random().toString(36).slice(2);
+          (window as any).onAndroidFetchSuccess = (cbId: string, raw: any) => {
+            if (cbId === callbackId) {
+              resolve(parseRawYtdlJsonToMediaInfo(raw));
+            }
+          };
+          (window as any).onAndroidFetchError = (cbId: string, err: string) => {
+            if (cbId === callbackId) {
+              reject(new Error(err));
+            }
+          };
+          (window as any).GMAndroidBridge.fetchMediaInfo(url, callbackId);
+        });
+      } else {
+        info = await invoke<MediaInfo>("fetch_media_info", {
+          url,
+          cookiesBrowser: options.cookiesBrowser,
+          cookiesFile: options.cookiesFile,
+          proxy: options.proxy,
+          discoveryArgs: options.ytdlpDiscoveryArgs,
+        });
+      }
 
       setMediaInfo(info);
 
@@ -462,21 +665,46 @@ export function App() {
     });
 
     try {
-      await invoke<string>("start_download", {
-        options: { ...effectiveOptions, overwriteFiles: false },
-      });
+      if ((window as any).GMAndroidBridge?.isAndroidAvailable?.()) {
+        const formatSpec =
+          effectiveOptions.downloadMode === "subtitles"
+            ? ""
+            : effectiveOptions.downloadMode === "audio"
+            ? effectiveOptions.audioStreamId === "ba"
+              ? "bestaudio"
+              : effectiveOptions.audioStreamId
+            : effectiveOptions.videoStreamId === "best"
+            ? "bestvideo+bestaudio/best"
+            : `${effectiveOptions.videoStreamId}+bestaudio/best`;
 
-      setProgress({
-        percent: 100,
-        text: "Download Completed Successfully! ✔",
-        status: "completed",
-      });
+        (window as any).GMAndroidBridge.startDownload(
+          taskId,
+          effectiveOptions.url,
+          formatSpec,
+          effectiveOptions.container,
+          effectiveOptions.enableClip,
+          effectiveOptions.startTime,
+          effectiveOptions.endTime,
+          effectiveOptions.enableSubtitles,
+          effectiveOptions.subtitleLang
+        );
+      } else {
+        await invoke<string>("start_download", {
+          options: { ...effectiveOptions, overwriteFiles: false },
+        });
 
-      setTasks((prev) =>
-        prev.map((t) =>
-          t.id === taskId ? { ...t, percent: 100, status: "completed" } : t
-        )
-      );
+        setProgress({
+          percent: 100,
+          text: "Download Completed Successfully! ✔",
+          status: "completed",
+        });
+
+        setTasks((prev) =>
+          prev.map((t) =>
+            t.id === taskId ? { ...t, percent: 100, status: "completed" } : t
+          )
+        );
+      }
     } catch (err: any) {
       const msg = typeof err === "string" ? err : err?.message || String(err);
       const isPaused =
@@ -576,7 +804,13 @@ export function App() {
 
   const handleCancelDownload = async () => {
     try {
-      await invoke("cancel_download");
+      if ((window as any).GMAndroidBridge?.isAndroidAvailable?.()) {
+        if (currentTaskIdRef.current) {
+          (window as any).GMAndroidBridge.cancelDownload(currentTaskIdRef.current);
+        }
+      } else {
+        await invoke("cancel_download");
+      }
     } catch {
       // ignore
     }
