@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::io::{BufRead, BufReader};
@@ -14,8 +15,8 @@ use std::os::windows::process::CommandExt;
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 pub struct DownloadState {
-    pub active_pid: Arc<Mutex<Option<u32>>>,
-    pub cancelled: Arc<Mutex<bool>>,
+    pub active_pids: Arc<Mutex<HashMap<String, u32>>>,
+    pub cancelled_tasks: Arc<Mutex<HashMap<String, bool>>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -57,6 +58,7 @@ pub struct MediaInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DownloadOptions {
+    pub task_id: Option<String>,
     pub url: String,
     pub save_folder: String,
     pub download_mode: String, // "video" | "audio" | "subtitles"
@@ -116,6 +118,7 @@ pub struct DownloadOptions {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProgressPayload {
+    pub task_id: String,
     pub percent: f64,
     pub text: String,
     pub speed: String,
@@ -567,10 +570,20 @@ async fn start_download(
     state: State<'_, DownloadState>,
     options: DownloadOptions,
 ) -> Result<String, String> {
-    let active_pid = state.active_pid.clone();
-    let cancelled = state.cancelled.clone();
-    *cancelled.lock().unwrap() = false;
+    let task_id = options.task_id.clone().unwrap_or_else(|| {
+        format!(
+            "task_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis()
+        )
+    });
+    let active_pids = state.active_pids.clone();
+    let cancelled_tasks = state.cancelled_tasks.clone();
+    cancelled_tasks.lock().unwrap().insert(task_id.clone(), false);
 
+    let tid = task_id.clone();
     tauri::async_runtime::spawn_blocking(move || {
         fs::create_dir_all(&options.save_folder)
             .map_err(|e| format!("Failed to create output folder: {}", e))?;
@@ -617,7 +630,10 @@ async fn start_download(
         cmd.arg("-c"); // --continue
         if options.use_part_files {
             cmd.arg("--part");
+        } else {
+            cmd.arg("--no-part");
         }
+        cmd.arg("--no-keep-fragments");
         if options.overwrite_files {
             cmd.arg("--force-overwrites");
         } else {
@@ -727,15 +743,27 @@ async fn start_download(
             }
         }
 
-        // Timeframe / Clipping Section (Cut cleanly with FFmpeg like Parabolic, keeping download 100% resumable)
+        // Timeframe / Clipping Section (Download only requested timeframe & frame-accurate cut)
         if options.enable_clip && !is_subtitles_only {
             let s = options.start_time.trim();
             let e = options.end_time.trim();
-            if !s.is_empty() && !e.is_empty() {
-                cmd.args([
-                    "--ppa",
-                    &format!("ffmpeg:-ss {} -to {}", s, e),
-                ]);
+            if !s.is_empty() {
+                let end_val = if e.is_empty() || (e == "00:00:00" && s != "00:00:00") {
+                    "inf"
+                } else {
+                    e
+                };
+                if s != end_val {
+                    // Download only the requested timeframe (saves 95% bandwidth and finishes in seconds)
+                    cmd.args(["--download-sections", &format!("*{}-{}", s, end_val)]);
+
+                    if options.precise_cut {
+                        // Force exact frame re-encoding at cut boundaries with FFmpeg
+                        cmd.arg("--force-keyframes-at-cuts");
+                    } else {
+                        cmd.arg("--no-force-keyframes-at-cuts");
+                    }
+                }
             }
         }
 
@@ -798,6 +826,8 @@ async fn start_download(
             cmd.args([
                 "--ppa",
                 &format!("ffmpeg:-threads {}", options.ffmpeg_threads),
+                "--downloader-args",
+                &format!("ffmpeg:-threads {}", options.ffmpeg_threads),
             ]);
         }
         if !options.post_processor_args.trim().is_empty() {
@@ -823,6 +853,7 @@ async fn start_download(
         let _ = app.emit(
             "download-progress",
             ProgressPayload {
+                task_id: tid.clone(),
                 percent: 2.0,
                 text: "Initializing download stream...".to_string(),
                 speed: "".to_string(),
@@ -835,7 +866,7 @@ async fn start_download(
             .spawn()
             .map_err(|e| format!("Failed to start yt-dlp download process: {}", e))?;
 
-        *active_pid.lock().unwrap() = Some(child.id());
+        active_pids.lock().unwrap().insert(tid.clone(), child.id());
 
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
@@ -861,7 +892,8 @@ async fn start_download(
         if let Some(so) = stdout {
             let reader = BufReader::new(so);
             for line in reader.lines().flatten() {
-                if *cancelled.lock().unwrap() {
+                let is_canc = cancelled_tasks.lock().unwrap().get(&tid).copied().unwrap_or(false);
+                if is_canc {
                     break;
                 }
                 let trimmed = line.trim();
@@ -899,6 +931,7 @@ async fn start_download(
                     let _ = app.emit(
                         "download-progress",
                         ProgressPayload {
+                            task_id: tid.clone(),
                             percent: pct,
                             text: after_tag.to_string(),
                             speed,
@@ -914,6 +947,7 @@ async fn start_download(
                     let _ = app.emit(
                         "download-progress",
                         ProgressPayload {
+                            task_id: tid.clone(),
                             percent: 99.0,
                             text: format!("Post-processing: {}", trimmed),
                             speed: "".to_string(),
@@ -928,9 +962,10 @@ async fn start_download(
         let status = child
             .wait()
             .map_err(|e| format!("Process wait failed: {}", e))?;
-        *active_pid.lock().unwrap() = None;
+        active_pids.lock().unwrap().remove(&tid);
 
-        if *cancelled.lock().unwrap() {
+        let was_cancelled = cancelled_tasks.lock().unwrap().remove(&tid).unwrap_or(false);
+        if was_cancelled {
             return Err("Download paused / cancelled by user.".to_string());
         }
 
@@ -943,6 +978,7 @@ async fn start_download(
         let _ = app.emit(
             "download-progress",
             ProgressPayload {
+                task_id: tid.clone(),
                 percent: 100.0,
                 text: "Download Completed Successfully! ✔".to_string(),
                 speed: "".to_string(),
@@ -962,9 +998,27 @@ async fn start_download(
 // ---------------------------------------------------------------------------
 
 #[command]
-async fn cancel_download(state: State<'_, DownloadState>) -> Result<(), String> {
-    *state.cancelled.lock().unwrap() = true;
-    if let Some(pid) = *state.active_pid.lock().unwrap() {
+async fn cancel_download(
+    state: State<'_, DownloadState>,
+    task_id: Option<String>,
+) -> Result<(), String> {
+    let mut pids_to_kill = Vec::new();
+    {
+        let mut pids = state.active_pids.lock().unwrap();
+        let mut cancels = state.cancelled_tasks.lock().unwrap();
+        if let Some(ref tid) = task_id {
+            cancels.insert(tid.clone(), true);
+            if let Some(pid) = pids.remove(tid) {
+                pids_to_kill.push(pid);
+            }
+        } else {
+            for (tid, pid) in pids.drain() {
+                cancels.insert(tid, true);
+                pids_to_kill.push(pid);
+            }
+        }
+    }
+    for pid in pids_to_kill {
         #[cfg(target_os = "windows")]
         {
             let mut kill_cmd = Command::new("taskkill");
@@ -1167,8 +1221,8 @@ async fn open_folder(path: String) -> Result<(), String> {
 pub fn run() {
     tauri::Builder::default()
         .manage(DownloadState {
-            active_pid: Arc::new(Mutex::new(None)),
-            cancelled: Arc::new(Mutex::new(false)),
+            active_pids: Arc::new(Mutex::new(HashMap::new())),
+            cancelled_tasks: Arc::new(Mutex::new(HashMap::new())),
         })
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())

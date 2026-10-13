@@ -24,6 +24,7 @@ import {
   DownloadMode,
   DownloadOptions,
   DownloadProgress,
+  DownloadTask,
   MediaInfo,
 } from "../types";
 
@@ -37,7 +38,9 @@ interface DownloadTabProps {
   onBrowseFolder: () => void;
   onOpenFolder: () => void;
   onStartDownload: (overrideMode?: DownloadMode) => void;
-  onCancelDownload: () => void;
+  onCancelDownload: (taskId?: string) => void;
+  onResumeTask?: (task: DownloadTask) => void;
+  tasks: DownloadTask[];
   progress: DownloadProgress;
   logs: string[];
 }
@@ -53,6 +56,8 @@ export const DownloadTab: React.FC<DownloadTabProps> = ({
   onOpenFolder,
   onStartDownload,
   onCancelDownload,
+  onResumeTask,
+  tasks,
   progress,
   logs,
 }) => {
@@ -605,6 +610,126 @@ export const DownloadTab: React.FC<DownloadTabProps> = ({
         </div>
       </div>
 
+      {/* 2.5 ACTIVE DOWNLOADS PANEL (Separate progress cards for each individual download) */}
+      {(() => {
+        const activeTasks = tasks.filter(
+          (t) => t.status === "downloading" || t.status === "paused"
+        );
+        if (activeTasks.length === 0) return null;
+
+        return (
+          <div className="neon-card p-4 sm:p-5 space-y-3 border-2 border-cyan-400/40 bg-gradient-to-br from-cyan-500/5 via-slate-500/5 to-purple-500/5">
+            <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-2.5">
+              <h3 className="text-xs sm:text-sm font-black uppercase tracking-wider text-slate-900 dark:text-white flex items-center gap-2">
+                <span className="relative flex h-2.5 w-2.5">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-cyan-500"></span>
+                </span>
+                Active Downloads ({activeTasks.length})
+              </h3>
+              <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400">
+                Multi-Task Progress &bull; Independent Resumes
+              </span>
+            </div>
+
+            <div className="space-y-3">
+              {activeTasks.map((t) => {
+                const isPaused = t.status === "paused";
+                return (
+                  <div
+                    key={t.id}
+                    className="p-3.5 rounded-xl bg-white dark:bg-slate-900/90 border border-slate-200 dark:border-slate-800 space-y-2.5 shadow-sm"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="flex items-center gap-3 min-w-0">
+                        {t.thumbnail ? (
+                          <img
+                            src={t.thumbnail}
+                            alt=""
+                            className="w-14 h-9 object-cover rounded-lg border border-slate-200 dark:border-slate-700 shrink-0"
+                          />
+                        ) : (
+                          <div className="w-14 h-9 rounded-lg bg-slate-100 dark:bg-slate-800 flex items-center justify-center shrink-0 border border-slate-200 dark:border-slate-700">
+                            <Film className="w-4 h-4 text-cyan-600" />
+                          </div>
+                        )}
+                        <div className="min-w-0">
+                          <h4
+                            className="text-xs sm:text-sm font-black text-slate-900 dark:text-white truncate"
+                            title={t.title}
+                          >
+                            {t.title}
+                          </h4>
+                          <div className="flex flex-wrap items-center gap-1.5 mt-0.5 text-[11px] text-slate-500 dark:text-slate-400 font-bold">
+                            <span className="px-1.5 py-0.2 rounded bg-cyan-100 dark:bg-cyan-950 text-cyan-800 dark:text-cyan-300">
+                              {t.container} &bull; {t.qualityLabel}
+                            </span>
+                            {t.options.enableClip && (
+                              <span className="px-1.5 py-0.2 rounded bg-purple-100 dark:bg-purple-950 text-purple-800 dark:text-purple-300">
+                                ✂️ {t.options.startTime} - {t.options.endTime}
+                                {t.options.preciseCut ? " (Precise)" : ""}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 shrink-0">
+                        {isPaused ? (
+                          <button
+                            type="button"
+                            onClick={() => onResumeTask && onResumeTask(t)}
+                            className="px-3 py-1.5 rounded-lg text-xs font-black bg-emerald-500 hover:bg-emerald-600 text-white flex items-center gap-1 shadow-sm transition-all"
+                            title="Resume download"
+                          >
+                            Resume
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => onCancelDownload(t.id)}
+                            className="px-3 py-1.5 rounded-lg text-xs font-black bg-amber-50 hover:bg-amber-100 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 border border-amber-300 dark:border-amber-700 flex items-center gap-1 transition-all"
+                            title="Pause this specific download"
+                          >
+                            Pause
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Independent Progress Bar */}
+                    <div className="space-y-1">
+                      <div className="flex items-center justify-between text-[11px] font-bold">
+                        <span className="text-slate-600 dark:text-slate-300 truncate max-w-md">
+                          {t.progressText || (isPaused ? "⏸ Download paused (.part saved)" : "Downloading fragments...")}
+                        </span>
+                        <span className="text-indigo-600 dark:text-cyan-400 font-black shrink-0">
+                          {t.speed ? `${t.speed} • ` : ""}
+                          {t.eta ? `ETA ${t.eta} • ` : ""}
+                          {t.percent.toFixed(1)}%
+                        </span>
+                      </div>
+                      <div className="w-full h-2 rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden border border-slate-200 dark:border-slate-700 p-0.5">
+                        <div
+                          className="h-full rounded-full transition-all duration-300"
+                          style={{
+                            width: `${Math.min(100, Math.max(0, t.percent))}%`,
+                            background: isPaused
+                              ? "#f59e0b"
+                              : "linear-gradient(90deg, #06b6d4, #6366f1, #10b981)",
+                            boxShadow: "0 0 8px rgba(6, 182, 212, 0.4)",
+                          }}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })()}
+
       {/* 3. SAVE LOCATION + ACTION BAR + PROGRESS */}
       <div className="neon-card p-4 sm:p-5 space-y-4">
         <div className="flex flex-col md:flex-row items-stretch md:items-end gap-3">
@@ -642,7 +767,7 @@ export const DownloadTab: React.FC<DownloadTabProps> = ({
             {isBusy && (
               <button
                 type="button"
-                onClick={onCancelDownload}
+                onClick={() => onCancelDownload()}
                 className="px-4 py-3 rounded-xl text-xs sm:text-sm font-extrabold bg-amber-50 hover:bg-amber-100 text-amber-700 border border-amber-300 flex items-center justify-center gap-2 shrink-0"
                 title="Pause active download"
               >

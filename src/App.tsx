@@ -291,6 +291,7 @@ export function App() {
     const setupListeners = async () => {
       try {
         unlistenProgress = await listen<{
+          taskId?: string;
           percent: number;
           text: string;
           speed: string;
@@ -298,6 +299,23 @@ export function App() {
           status: string;
         }>("download-progress", (event) => {
           const p = event.payload;
+          const targetTaskId = p.taskId || currentTaskIdRef.current;
+
+          setTasks((prev) =>
+            prev.map((t) =>
+              t.id === targetTaskId
+                ? {
+                    ...t,
+                    percent: p.percent,
+                    speed: p.speed,
+                    eta: p.eta,
+                    progressText: p.text,
+                    status: p.status === "completed" ? "completed" : "downloading",
+                  }
+                : t
+            )
+          );
+
           setProgress({
             percent: p.percent,
             text: p.text,
@@ -305,22 +323,6 @@ export function App() {
             eta: p.eta,
             status: (p.status as DownloadProgress["status"]) || "downloading",
           });
-
-          if (currentTaskIdRef.current) {
-            const tid = currentTaskIdRef.current;
-            setTasks((prev) =>
-              prev.map((t) =>
-                t.id === tid
-                  ? {
-                      ...t,
-                      percent: p.percent,
-                      speed: p.speed,
-                      status: p.status === "completed" ? "completed" : "downloading",
-                    }
-                  : t
-              )
-            );
-          }
         });
 
         unlistenLog = await listen<string>("download-log", (event) => {
@@ -701,7 +703,7 @@ export function App() {
       percent: 2,
       status: "downloading",
       createdAt: Date.now(),
-      options: { ...effectiveOptions, overwriteFiles: false },
+      options: { ...effectiveOptions, taskId, overwriteFiles: false },
     };
 
     setTasks((prev) => {
@@ -747,7 +749,7 @@ export function App() {
         );
       } else {
         await invoke<string>("start_download", {
-          options: { ...effectiveOptions, overwriteFiles: false },
+          options: { ...effectiveOptions, taskId, overwriteFiles: false },
         });
 
         setProgress({
@@ -768,7 +770,7 @@ export function App() {
         msg.toLowerCase().includes("paused") || msg.toLowerCase().includes("cancelled");
 
       setProgress({
-        percent: progress.percent,
+        percent: 0,
         text: isPaused
           ? "⏸ Download Paused — Partial .part file preserved for instant resume"
           : `Error: ${msg}`,
@@ -787,7 +789,9 @@ export function App() {
         )
       );
     } finally {
-      currentTaskIdRef.current = null;
+      if (currentTaskIdRef.current === taskId) {
+        currentTaskIdRef.current = null;
+      }
     }
   };
 
@@ -799,29 +803,6 @@ export function App() {
           enableSubtitles: overrideMode === "subtitles" ? true : options.enableSubtitles,
         }
       : options;
-
-    if (currentTaskIdRef.current !== null) {
-      // Another download is active! Queue this download into tasks so multiple downloads can run
-      const taskId = `task_${Date.now()}`;
-      const newTask: DownloadTask = {
-        id: taskId,
-        title: mediaInfo?.title || effectiveOptions.url,
-        url: effectiveOptions.url,
-        thumbnail: mediaInfo?.thumbnail,
-        container: effectiveOptions.container,
-        qualityLabel: "Queued",
-        saveFolder: effectiveOptions.saveFolder,
-        percent: 0,
-        status: "paused",
-        createdAt: Date.now(),
-        options: { ...effectiveOptions, overwriteFiles: false },
-      };
-      setTasks((prev) => [newTask, ...prev]);
-      setOptions((prev) => ({ ...prev, url: "" }));
-      setMediaInfo(null);
-      setActiveTab("history");
-      return;
-    }
 
     runDownloadWithOptions(effectiveOptions);
   };
@@ -853,20 +834,21 @@ export function App() {
 
     setTasks((prev) => [...newTasks, ...prev]);
 
-    // Sequentially / concurrently start downloading each batch task
+    // Sequentially start downloading each batch task
     for (const task of newTasks) {
       await runDownloadWithOptions(task.options, task.id);
     }
   };
 
-  const handleCancelDownload = async () => {
+  const handleCancelDownload = async (taskId?: string) => {
     try {
       if ((window as any).GMAndroidBridge?.isAndroidAvailable?.()) {
-        if (currentTaskIdRef.current) {
-          (window as any).GMAndroidBridge.cancelDownload(currentTaskIdRef.current);
+        const targetId = taskId || currentTaskIdRef.current;
+        if (targetId) {
+          (window as any).GMAndroidBridge.cancelDownload(targetId);
         }
       } else {
-        await invoke("cancel_download");
+        await invoke("cancel_download", { taskId: taskId || null });
       }
     } catch {
       // ignore
@@ -996,6 +978,8 @@ export function App() {
             onOpenFolder={() => handleOpenFolder()}
             onStartDownload={handleStartDownload}
             onCancelDownload={handleCancelDownload}
+            onResumeTask={handleResumeTask}
+            tasks={tasks}
             progress={progress}
             logs={logs}
           />
@@ -1014,7 +998,7 @@ export function App() {
           <HistoryTab
             tasks={tasks}
             onResumeTask={handleResumeTask}
-            onPauseTask={() => handleCancelDownload()}
+            onPauseTask={(id) => handleCancelDownload(id)}
             onDeleteTask={handleDeleteTask}
             onClearCompleted={handleClearCompleted}
             onOpenFolder={(p) => handleOpenFolder(p)}

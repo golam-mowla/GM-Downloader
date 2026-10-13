@@ -146,8 +146,14 @@ export const HistoryTab: React.FC<HistoryTabProps> = ({
                 {/* Progress Bar */}
                 <div className="space-y-1">
                   <div className="flex items-center justify-between text-[11px] font-bold text-slate-600 dark:text-slate-300">
-                    <span>{task.percent.toFixed(1)}%</span>
-                    {task.speed && <span>{task.speed}</span>}
+                    <span className="truncate max-w-sm">
+                      {task.progressText || (task.percent >= 100 ? "Completed ✔" : `${task.percent.toFixed(1)}%`)}
+                    </span>
+                    <span className="text-indigo-600 dark:text-cyan-400 font-black shrink-0">
+                      {task.speed ? `${task.speed} • ` : ""}
+                      {task.eta ? `ETA ${task.eta} • ` : ""}
+                      {task.percent.toFixed(1)}%
+                    </span>
                   </div>
                   <div className="w-full bg-slate-100 dark:bg-slate-800 h-2.5 rounded-full overflow-hidden border border-slate-200 dark:border-slate-700">
                     <div

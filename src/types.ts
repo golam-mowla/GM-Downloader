@@ -61,6 +61,7 @@ export const ALL_CONTAINERS: ContainerFormat[] = [
 ];
 
 export interface DownloadOptions {
+  taskId?: string;
   url: string;
   saveFolder: string;
   downloadMode: DownloadMode;
@@ -151,6 +152,8 @@ export interface DownloadTask {
   saveFolder: string;
   percent: number;
   speed?: string;
+  eta?: string;
+  progressText?: string;
   status: "completed" | "downloading" | "paused" | "interrupted" | "error";
   error?: string;
   createdAt: number;
