@@ -308,6 +308,12 @@ async fn fetch_media_info(
             "--quiet",
         ]);
 
+        // Bypass 18+ Age Restriction & Bot Challenges via iOS/Web client spoofing
+        cmd.args([
+            "--extractor-args",
+            "youtube:player_client=ios,web;youtube:player_skip=configs,webpage",
+        ]);
+
         // Pass Deno JS runtime if available
         if find_exe_in_augmented_path("deno").is_some() {
             cmd.args(["--js-runtimes", "deno"]);
@@ -556,6 +562,12 @@ async fn start_download(
         let mut cmd = make_command("yt-dlp");
         cmd.args(["--newline", "--progress", "--no-playlist"]);
 
+        // Bypass 18+ Age Restriction & Bot Challenges via iOS/Web client spoofing
+        cmd.args([
+            "--extractor-args",
+            "youtube:player_client=ios,web;youtube:player_skip=configs,webpage",
+        ]);
+
         // Ensure Deno JS runtime
         if find_exe_in_augmented_path("deno").is_some() {
             cmd.args(["--js-runtimes", "deno"]);
@@ -591,16 +603,15 @@ async fn start_download(
         };
         cmd.args(["-o", &out_tmpl, "--windows-filenames"]);
 
-        // Part files & Overwrite
+        // Resumable Part Files & Continue - Always resume from saved byte
+        cmd.arg("-c"); // --continue
         if options.use_part_files {
             cmd.arg("--part");
-        } else {
-            cmd.arg("--no-part");
         }
         if options.overwrite_files {
             cmd.arg("--force-overwrites");
         } else {
-            cmd.arg("--continue");
+            cmd.arg("--no-overwrites");
         }
 
         // Mode & Container Handling
@@ -706,15 +717,15 @@ async fn start_download(
             }
         }
 
-        // Timeframe / Clipping Section
+        // Timeframe / Clipping Section (Cut cleanly with FFmpeg like Parabolic, keeping download 100% resumable)
         if options.enable_clip && !is_subtitles_only {
             let s = options.start_time.trim();
             let e = options.end_time.trim();
             if !s.is_empty() && !e.is_empty() {
-                cmd.args(["--download-sections", &format!("*{}-{}", s, e)]);
-                if options.precise_cut {
-                    cmd.arg("--force-keyframes-at-cuts");
-                }
+                cmd.args([
+                    "--ppa",
+                    &format!("ffmpeg:-ss {} -to {}", s, e),
+                ]);
             }
         }
 
@@ -966,7 +977,7 @@ async fn cancel_download(state: State<'_, DownloadState>) -> Result<(), String> 
 #[command]
 async fn check_tool_updates() -> Result<Vec<ToolStatus>, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        // 1. yt-dlp
+        // 1. yt-dlp installed and latest version check
         let ytdlp_ver = make_command("yt-dlp")
             .arg("--version")
             .output()
@@ -979,6 +990,27 @@ async fn check_tool_updates() -> Result<Vec<ToolStatus>, String> {
                 }
             })
             .unwrap_or_else(|| "Not Found".to_string());
+
+        let latest_ytdlp = make_command("python")
+            .args(["-c", "import urllib.request, json; print(json.loads(urllib.request.urlopen('https://pypi.org/pypi/yt-dlp/json', timeout=3).read())['info']['version'])"])
+            .output()
+            .ok()
+            .and_then(|o| {
+                if o.status.success() {
+                    Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_else(|| ytdlp_ver.clone());
+
+        let has_ytdlp_update = if ytdlp_ver != "Not Found" && !latest_ytdlp.is_empty() {
+            let norm_inst = ytdlp_ver.replace(".0", ".");
+            let norm_late = latest_ytdlp.replace(".0", ".");
+            norm_inst != norm_late
+        } else {
+            false
+        };
 
         // 2. Deno
         let deno_ver = make_command("deno")
@@ -1020,8 +1052,8 @@ async fn check_tool_updates() -> Result<Vec<ToolStatus>, String> {
             ToolStatus {
                 name: "yt-dlp".to_string(),
                 installed_version: ytdlp_ver.clone(),
-                latest_version: ytdlp_ver,
-                has_update: false,
+                latest_version: latest_ytdlp,
+                has_update: has_ytdlp_update,
             },
             ToolStatus {
                 name: "Deno".to_string(),

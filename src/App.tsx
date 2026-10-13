@@ -7,9 +7,11 @@ import {
   Settings,
   History,
   RefreshCw,
+  Layers,
 } from "lucide-react";
 import { Header } from "./components/Header";
 import { DownloadTab } from "./components/DownloadTab";
+import { BatchTab } from "./components/BatchTab";
 import { SettingsTab } from "./components/SettingsTab";
 import { HistoryTab } from "./components/HistoryTab";
 import { UpdatesTab } from "./components/UpdatesTab";
@@ -21,6 +23,8 @@ import {
   MediaInfo,
   ToolVersionInfo,
 } from "./types";
+
+const CURRENT_APP_VERSION = "2.0.0";
 
 const DEFAULT_OPTIONS: DownloadOptions = {
   url: "",
@@ -52,7 +56,7 @@ const DEFAULT_OPTIONS: DownloadOptions = {
 
   // Parabolic Options - Downloads
   maxActiveDownloads: 5,
-  overwriteFiles: true,
+  overwriteFiles: false, // RESUME FIX: Never overwrite files so partial .part downloads resume!
   includeMediaId: false,
   includeAutoSubtitles: true,
   includeSuperRes: false,
@@ -62,7 +66,7 @@ const DEFAULT_OPTIONS: DownloadOptions = {
   preferredFps: "Any (Highest)",
 
   // Parabolic Options - Downloader
-  usePartFiles: true,
+  usePartFiles: true, // Always save .part files
   sponsorBlock: false,
   limitSpeed: false,
   speedLimitKb: 1024,
@@ -86,7 +90,7 @@ const DEFAULT_OPTIONS: DownloadOptions = {
   postProcessorArgs: "",
 };
 
-type ActiveTab = "download" | "options" | "history" | "updates";
+type ActiveTab = "download" | "batch" | "options" | "history" | "updates";
 
 export function App() {
   const [activeTab, setActiveTab] = useState<ActiveTab>("download");
@@ -95,7 +99,7 @@ export function App() {
     try {
       const saved = localStorage.getItem("gm_downloader_options_v2");
       if (saved) {
-        return { ...DEFAULT_OPTIONS, ...JSON.parse(saved) };
+        return { ...DEFAULT_OPTIONS, ...JSON.parse(saved), overwriteFiles: false };
       }
     } catch {
       // ignore
@@ -108,7 +112,6 @@ export function App() {
       const saved = localStorage.getItem("gm_downloader_history_v2");
       if (saved) {
         const parsed: DownloadTask[] = JSON.parse(saved);
-        // Any task that was still "downloading" when PC shut down becomes "interrupted"
         return parsed.map((t) =>
           t.status === "downloading" ? { ...t, status: "interrupted" } : t
         );
@@ -125,7 +128,7 @@ export function App() {
 
   const [progress, setProgress] = useState<DownloadProgress>({
     percent: 0,
-    text: "Ready — Paste a link and click Fetch Link Qualities or Start Download",
+    text: "Ready — Paste link(s) and click Fetch or Start Download",
     status: "idle",
   });
   const [logs, setLogs] = useState<string[]>([]);
@@ -133,30 +136,32 @@ export function App() {
   const [tools, setTools] = useState<ToolVersionInfo[]>([
     {
       name: "yt-dlp",
-      installedVersion: "Checking...",
-      latestVersion: "Latest",
+      installedVersion: "Ready",
+      latestVersion: "Up to date",
       hasUpdate: false,
     },
     {
       name: "Deno",
-      installedVersion: "Checking...",
-      latestVersion: "Latest",
+      installedVersion: "Ready",
+      latestVersion: "Up to date",
       hasUpdate: false,
     },
     {
       name: "FFmpeg",
-      installedVersion: "Checking...",
-      latestVersion: "Latest",
+      installedVersion: "Ready",
+      latestVersion: "Up to date",
       hasUpdate: false,
     },
   ]);
   const [checkingTools, setCheckingTools] = useState(false);
   const [updateLogs, setUpdateLogs] = useState<string[]>([]);
   const [updateSuccess, setUpdateSuccess] = useState<string | null>(null);
+  const [appHasUpdate, setAppHasUpdate] = useState(false);
+  const [latestAppVersion, setLatestAppVersion] = useState<string | undefined>(undefined);
 
   const currentTaskIdRef = useRef<string | null>(null);
 
-  // Sync theme to document root
+  // Sync theme
   useEffect(() => {
     const root = document.documentElement;
     if (options.theme === "Dark") {
@@ -164,9 +169,7 @@ export function App() {
     } else if (options.theme === "Light (White Neon)") {
       root.classList.remove("dark");
     } else {
-      const prefersDark = window.matchMedia(
-        "(prefers-color-scheme: dark)"
-      ).matches;
+      const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
       root.classList.toggle("dark", prefersDark);
     }
     try {
@@ -185,7 +188,7 @@ export function App() {
     }
   }, [tasks]);
 
-  // Subscribe to Tauri Backend Events + Initial Tool Version Check
+  // Setup listeners and automatic update check on startup
   useEffect(() => {
     let unlistenProgress: (() => void) | undefined;
     let unlistenLog: (() => void) | undefined;
@@ -217,8 +220,7 @@ export function App() {
                       ...t,
                       percent: p.percent,
                       speed: p.speed,
-                      status:
-                        p.status === "completed" ? "completed" : "downloading",
+                      status: p.status === "completed" ? "completed" : "downloading",
                     }
                   : t
               )
@@ -230,12 +232,12 @@ export function App() {
           setLogs((prev) => [...prev.slice(-120), event.payload]);
         });
       } catch {
-        // Running in browser preview mode
+        // Preview mode
       }
     };
 
     setupListeners();
-    handleCheckToolUpdates();
+    handleCheckAllUpdates();
 
     return () => {
       if (unlistenProgress) unlistenProgress();
@@ -243,17 +245,35 @@ export function App() {
     };
   }, []);
 
-  const handleCheckToolUpdates = async () => {
+  const handleCheckAllUpdates = async () => {
     setCheckingTools(true);
+    // 1. Check tools from backend
     try {
       const res = await invoke<ToolVersionInfo[]>("check_tool_updates");
       if (res && Array.isArray(res)) {
         setTools(res);
       }
     } catch {
-      // Fallback if running outside Tauri
+      // ignore
     } finally {
       setCheckingTools(false);
+    }
+
+    // 2. Check PyPI & GitHub for App updates
+    try {
+      const ghRes = await fetch(
+        "https://api.github.com/repos/golam-mowla/GM-Downloader/releases/latest"
+      );
+      if (ghRes.ok) {
+        const ghData = await ghRes.json();
+        const tag = ghData.tag_name ? ghData.tag_name.replace("v", "") : "";
+        if (tag && tag !== CURRENT_APP_VERSION) {
+          setAppHasUpdate(true);
+          setLatestAppVersion(`v${tag}`);
+        }
+      }
+    } catch {
+      // ignore
     }
   };
 
@@ -274,7 +294,7 @@ export function App() {
         `[${new Date().toLocaleTimeString()}] ✔ ${msg}`,
       ]);
       setUpdateSuccess(msg);
-      await handleCheckToolUpdates();
+      await handleCheckAllUpdates();
     } catch (err: any) {
       setUpdateLogs((prev) => [
         ...prev,
@@ -304,7 +324,7 @@ export function App() {
     setMediaInfo(null);
     setProgress({
       percent: 10,
-      text: "Inspecting link and discovering all available qualities, codecs & subtitles...",
+      text: "Inspecting link (18+ bypass & dynamic qualities discovery)...",
       status: "fetching",
     });
 
@@ -319,7 +339,6 @@ export function App() {
 
       setMediaInfo(info);
 
-      // Default to highest video stream and highest audio stream
       setOptions((prev) => ({
         ...prev,
         videoStreamId: "best",
@@ -332,7 +351,7 @@ export function App() {
 
       setProgress({
         percent: 0,
-        text: `✔ Fetched "${info.title}" (${info.videoStreams.length} Video streams, ${info.audioStreams.length} Audio streams, ${info.subtitles.length} Subtitles)`,
+        text: `✔ Fetched "${info.title}" (${info.videoStreams.length} Video, ${info.audioStreams.length} Audio, ${info.subtitles.length} Subs)`,
         status: "idle",
       });
     } catch (err: any) {
@@ -340,7 +359,7 @@ export function App() {
       setFetchError(errMsg);
       setProgress({
         percent: 0,
-        text: "Could not fetch link metadata. Check error message above.",
+        text: "Could not fetch metadata. You can still click Start Download.",
         status: "error",
       });
     } finally {
@@ -422,7 +441,7 @@ export function App() {
       percent: 2,
       status: "downloading",
       createdAt: Date.now(),
-      options: effectiveOptions,
+      options: { ...effectiveOptions, overwriteFiles: false },
     };
 
     setTasks((prev) => {
@@ -438,13 +457,13 @@ export function App() {
     setLogs([]);
     setProgress({
       percent: 2,
-      text: "Starting download engine...",
+      text: "Starting download engine (resuming from .part file if available)...",
       status: "downloading",
     });
 
     try {
       await invoke<string>("start_download", {
-        options: effectiveOptions,
+        options: { ...effectiveOptions, overwriteFiles: false },
       });
 
       setProgress({
@@ -460,12 +479,13 @@ export function App() {
       );
     } catch (err: any) {
       const msg = typeof err === "string" ? err : err?.message || String(err);
-      const isPaused = msg.toLowerCase().includes("paused") || msg.toLowerCase().includes("cancelled");
+      const isPaused =
+        msg.toLowerCase().includes("paused") || msg.toLowerCase().includes("cancelled");
 
       setProgress({
         percent: progress.percent,
         text: isPaused
-          ? "⏸ Download Paused — Partial .part file saved for instant resume"
+          ? "⏸ Download Paused — Partial .part file preserved for instant resume"
           : `Error: ${msg}`,
         status: isPaused ? "paused" : "error",
       });
@@ -498,6 +518,39 @@ export function App() {
     runDownloadWithOptions(effectiveOptions);
   };
 
+  // MULTIPLE FILE / BATCH DOWNLOAD HANDLER
+  const handleStartBatchDownload = async (
+    urls: string[],
+    batchOpts: Partial<DownloadOptions>
+  ) => {
+    setActiveTab("history");
+
+    const newTasks: DownloadTask[] = urls.map((url, idx) => ({
+      id: `batch_${Date.now()}_${idx}`,
+      title: `Batch Item: ${url}`,
+      url,
+      container: batchOpts.container || options.container,
+      qualityLabel: "Batch Quality",
+      saveFolder: options.saveFolder,
+      percent: 0,
+      status: "paused",
+      createdAt: Date.now() + idx,
+      options: {
+        ...options,
+        ...batchOpts,
+        url,
+        overwriteFiles: false,
+      },
+    }));
+
+    setTasks((prev) => [...newTasks, ...prev]);
+
+    // Sequentially / concurrently start downloading each batch task
+    for (const task of newTasks) {
+      await runDownloadWithOptions(task.options, task.id);
+    }
+  };
+
   const handleCancelDownload = async () => {
     try {
       await invoke("cancel_download");
@@ -507,8 +560,6 @@ export function App() {
   };
 
   const handleResumeTask = (task: DownloadTask) => {
-    setActiveTab("download");
-    setOptions(task.options);
     runDownloadWithOptions(task.options, task.id);
   };
 
@@ -521,25 +572,30 @@ export function App() {
   };
 
   const activeOrPausedCount = tasks.filter(
-    (t) => t.status === "downloading" || t.status === "paused" || t.status === "interrupted"
+    (t) =>
+      t.status === "downloading" ||
+      t.status === "paused" ||
+      t.status === "interrupted"
   ).length;
 
   return (
-    <div className="min-h-screen flex flex-col">
-      {/* Top Header with Parrot Logo */}
+    <div className="min-h-screen flex flex-col pb-16 sm:pb-6">
+      {/* Top Header with Full Parrot Icon and Update Pill */}
       <Header
         tools={tools}
+        appHasUpdate={appHasUpdate}
+        latestAppVersion={latestAppVersion}
         onOpenUpdates={() => setActiveTab("updates")}
       />
 
-      {/* Main Content Container */}
-      <main className="flex-1 max-w-6xl w-full mx-auto px-4 sm:px-6 py-4 space-y-4">
-        {/* Navigation Tabs (Renamed "Options" per User Request) */}
-        <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 dark:border-slate-800 pb-3">
+      {/* Main Content Area */}
+      <main className="flex-1 max-w-6xl w-full mx-auto px-3 sm:px-6 py-4 space-y-4">
+        {/* Desktop Navigation Tabs */}
+        <div className="hidden sm:flex flex-wrap items-center gap-2 border-b border-slate-200 dark:border-slate-800 pb-3">
           <button
             type="button"
             onClick={() => setActiveTab("download")}
-            className={`px-4 py-2.5 rounded-xl text-xs sm:text-sm font-extrabold flex items-center gap-2 transition-all ${
+            className={`px-4 py-2.5 rounded-xl text-xs sm:text-sm font-black flex items-center gap-2 transition-all ${
               activeTab === "download"
                 ? "neon-btn-primary"
                 : "bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-800 hover:border-cyan-400"
@@ -551,21 +607,21 @@ export function App() {
 
           <button
             type="button"
-            onClick={() => setActiveTab("options")}
-            className={`px-4 py-2.5 rounded-xl text-xs sm:text-sm font-extrabold flex items-center gap-2 transition-all ${
-              activeTab === "options"
+            onClick={() => setActiveTab("batch")}
+            className={`px-4 py-2.5 rounded-xl text-xs sm:text-sm font-black flex items-center gap-2 transition-all ${
+              activeTab === "batch"
                 ? "neon-btn-primary"
                 : "bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-800 hover:border-cyan-400"
             }`}
           >
-            <Settings className="w-4 h-4" />
-            Options
+            <Layers className="w-4 h-4" />
+            Batch / Multi-Download
           </button>
 
           <button
             type="button"
             onClick={() => setActiveTab("history")}
-            className={`px-4 py-2.5 rounded-xl text-xs sm:text-sm font-extrabold flex items-center gap-2 transition-all ${
+            className={`px-4 py-2.5 rounded-xl text-xs sm:text-sm font-black flex items-center gap-2 transition-all ${
               activeTab === "history"
                 ? "neon-btn-primary"
                 : "bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-800 hover:border-cyan-400"
@@ -582,8 +638,21 @@ export function App() {
 
           <button
             type="button"
+            onClick={() => setActiveTab("options")}
+            className={`px-4 py-2.5 rounded-xl text-xs sm:text-sm font-black flex items-center gap-2 transition-all ${
+              activeTab === "options"
+                ? "neon-btn-primary"
+                : "bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-800 hover:border-cyan-400"
+            }`}
+          >
+            <Settings className="w-4 h-4" />
+            Options
+          </button>
+
+          <button
+            type="button"
             onClick={() => setActiveTab("updates")}
-            className={`px-4 py-2.5 rounded-xl text-xs sm:text-sm font-extrabold flex items-center gap-2 transition-all ${
+            className={`px-4 py-2.5 rounded-xl text-xs sm:text-sm font-black flex items-center gap-2 transition-all ${
               activeTab === "updates"
                 ? "neon-btn-primary"
                 : "bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-800 hover:border-cyan-400"
@@ -594,7 +663,7 @@ export function App() {
           </button>
         </div>
 
-        {/* Active Tab View */}
+        {/* Tab Views */}
         {activeTab === "download" && (
           <DownloadTab
             options={options}
@@ -612,12 +681,12 @@ export function App() {
           />
         )}
 
-        {activeTab === "options" && (
-          <SettingsTab
+        {activeTab === "batch" && (
+          <BatchTab
             options={options}
-            setOptions={setOptions}
-            onBrowseCookiesFile={handleBrowseCookiesFile}
-            onResetDefaults={() => setOptions(DEFAULT_OPTIONS)}
+            onBrowseFolder={handleBrowseFolder}
+            onOpenFolder={() => handleOpenFolder()}
+            onStartBatchDownload={handleStartBatchDownload}
           />
         )}
 
@@ -632,11 +701,20 @@ export function App() {
           />
         )}
 
+        {activeTab === "options" && (
+          <SettingsTab
+            options={options}
+            setOptions={setOptions}
+            onBrowseCookiesFile={handleBrowseCookiesFile}
+            onResetDefaults={() => setOptions(DEFAULT_OPTIONS)}
+          />
+        )}
+
         {activeTab === "updates" && (
           <UpdatesTab
             tools={tools}
             checking={checkingTools}
-            onCheckUpdates={handleCheckToolUpdates}
+            onCheckUpdates={handleCheckAllUpdates}
             onUpdateTool={handleUpdateTool}
             onUpdateAll={handleUpdateAllTools}
             updateLogs={updateLogs}
@@ -644,6 +722,81 @@ export function App() {
           />
         )}
       </main>
+
+      {/* MOBILE BOTTOM NAVIGATION BAR (Fits smartphone displays perfectly) */}
+      <nav className="sm:hidden fixed bottom-0 left-0 right-0 z-40 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-t border-slate-200 dark:border-slate-800 flex items-center justify-around py-2 px-1 shadow-lg">
+        <button
+          type="button"
+          onClick={() => setActiveTab("download")}
+          className={`flex flex-col items-center justify-center p-1.5 rounded-xl text-[10px] font-black transition-colors ${
+            activeTab === "download"
+              ? "text-cyan-600 dark:text-cyan-400"
+              : "text-slate-500 hover:text-slate-900 dark:hover:text-slate-200"
+          }`}
+        >
+          <Download className="w-4 h-4 mb-0.5" />
+          Single
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveTab("batch")}
+          className={`flex flex-col items-center justify-center p-1.5 rounded-xl text-[10px] font-black transition-colors ${
+            activeTab === "batch"
+              ? "text-cyan-600 dark:text-cyan-400"
+              : "text-slate-500 hover:text-slate-900 dark:hover:text-slate-200"
+          }`}
+        >
+          <Layers className="w-4 h-4 mb-0.5" />
+          Batch
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveTab("history")}
+          className={`flex flex-col items-center justify-center p-1.5 rounded-xl text-[10px] font-black transition-colors relative ${
+            activeTab === "history"
+              ? "text-cyan-600 dark:text-cyan-400"
+              : "text-slate-500 hover:text-slate-900 dark:hover:text-slate-200"
+          }`}
+        >
+          <History className="w-4 h-4 mb-0.5" />
+          Queue
+          {activeOrPausedCount > 0 && (
+            <span className="absolute top-0 right-1 px-1 text-[9px] rounded-full bg-amber-400 text-slate-950 font-black">
+              {activeOrPausedCount}
+            </span>
+          )}
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveTab("options")}
+          className={`flex flex-col items-center justify-center p-1.5 rounded-xl text-[10px] font-black transition-colors ${
+            activeTab === "options"
+              ? "text-cyan-600 dark:text-cyan-400"
+              : "text-slate-500 hover:text-slate-900 dark:hover:text-slate-200"
+          }`}
+        >
+          <Settings className="w-4 h-4 mb-0.5" />
+          Options
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveTab("updates")}
+          className={`flex flex-col items-center justify-center p-1.5 rounded-xl text-[10px] font-black transition-colors ${
+            activeTab === "updates"
+              ? "text-cyan-600 dark:text-cyan-400"
+              : "text-slate-500 hover:text-slate-900 dark:hover:text-slate-200"
+          }`}
+        >
+          <RefreshCw className="w-4 h-4 mb-0.5" />
+          Updates
+        </button>
+      </nav>
     </div>
   );
 }
+
+export default App;
