@@ -644,6 +644,7 @@ export const DownloadTab: React.FC<DownloadTabProps> = ({
                 type="button"
                 onClick={onCancelDownload}
                 className="px-4 py-3 rounded-xl text-xs sm:text-sm font-extrabold bg-amber-50 hover:bg-amber-100 text-amber-700 border border-amber-300 flex items-center justify-center gap-2 shrink-0"
+                title="Pause active download"
               >
                 <PauseCircle className="w-4 h-4" />
                 Pause / Stop
@@ -652,21 +653,13 @@ export const DownloadTab: React.FC<DownloadTabProps> = ({
 
             <button
               type="button"
-              disabled={isBusy || !options.url.trim()}
+              disabled={!options.url.trim()}
               onClick={() => onStartDownload()}
-              className="neon-btn-primary px-7 py-3 rounded-xl text-sm font-extrabold flex items-center justify-center gap-2 shrink-0 disabled:opacity-50"
+              className="neon-btn-primary px-6 py-3 rounded-xl text-sm font-black flex items-center justify-center gap-2 shrink-0 disabled:opacity-50 shadow-md"
+              title="Add this download to queue anytime"
             >
-              {isBusy ? (
-                <>
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  Downloading...
-                </>
-              ) : (
-                <>
-                  <Download className="w-4 h-4" />
-                  Start Download
-                </>
-              )}
+              <Download className="w-4 h-4" />
+              <span>{isBusy ? "+ Add to Queue" : "Start Download"}</span>
             </button>
           </div>
         </div>

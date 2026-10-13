@@ -515,6 +515,29 @@ export function App() {
         }
       : options;
 
+    if (currentTaskIdRef.current !== null) {
+      // Another download is active! Queue this download into tasks so multiple downloads can run
+      const taskId = `task_${Date.now()}`;
+      const newTask: DownloadTask = {
+        id: taskId,
+        title: mediaInfo?.title || effectiveOptions.url,
+        url: effectiveOptions.url,
+        thumbnail: mediaInfo?.thumbnail,
+        container: effectiveOptions.container,
+        qualityLabel: "Queued",
+        saveFolder: effectiveOptions.saveFolder,
+        percent: 0,
+        status: "paused",
+        createdAt: Date.now(),
+        options: { ...effectiveOptions, overwriteFiles: false },
+      };
+      setTasks((prev) => [newTask, ...prev]);
+      setOptions((prev) => ({ ...prev, url: "" }));
+      setMediaInfo(null);
+      setActiveTab("history");
+      return;
+    }
+
     runDownloadWithOptions(effectiveOptions);
   };
 
@@ -580,12 +603,18 @@ export function App() {
 
   return (
     <div className="min-h-screen flex flex-col pb-16 sm:pb-6">
-      {/* Top Header with Full Parrot Icon and Update Pill */}
+      {/* Top Header with Full Parrot Icon, Update Pill, + Add Button and Help Menu */}
       <Header
         tools={tools}
         appHasUpdate={appHasUpdate}
         latestAppVersion={latestAppVersion}
         onOpenUpdates={() => setActiveTab("updates")}
+        onAddNewDownload={() => {
+          setActiveTab("download");
+          setOptions((prev) => ({ ...prev, url: "" }));
+          setMediaInfo(null);
+          setFetchError(null);
+        }}
       />
 
       {/* Main Content Area */}

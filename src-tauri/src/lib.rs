@@ -308,12 +308,6 @@ async fn fetch_media_info(
             "--quiet",
         ]);
 
-        // Bypass 18+ Age Restriction & Bot Challenges via iOS/Web client spoofing
-        cmd.args([
-            "--extractor-args",
-            "youtube:player_client=ios,web;youtube:player_skip=configs,webpage",
-        ]);
-
         // Pass Deno JS runtime if available
         if find_exe_in_augmented_path("deno").is_some() {
             cmd.args(["--js-runtimes", "deno"]);
@@ -344,9 +338,31 @@ async fn fetch_media_info(
 
         cmd.arg(url.trim());
 
-        let output = cmd
+        let mut output = cmd
             .output()
             .map_err(|e| format!("Could not launch yt-dlp: {}", e))?;
+
+        // Intelligent 18+ Age Restriction & Sign-in wall auto-retry
+        if !output.status.success() {
+            let err = String::from_utf8_lossy(&output.stderr);
+            if err.contains("confirm your age") || err.contains("inappropriate") || err.contains("Sign in") {
+                let mut retry_cmd = make_command("yt-dlp");
+                retry_cmd.args([
+                    "--dump-single-json",
+                    "--no-playlist",
+                    "--no-warnings",
+                    "--quiet",
+                    "--extractor-args",
+                    "youtube:player_client=android",
+                ]);
+                retry_cmd.arg(url.trim());
+                if let Ok(retry_out) = retry_cmd.output() {
+                    if retry_out.status.success() {
+                        output = retry_out;
+                    }
+                }
+            }
+        }
 
         if !output.status.success() {
             let err = String::from_utf8_lossy(&output.stderr);
@@ -561,12 +577,6 @@ async fn start_download(
 
         let mut cmd = make_command("yt-dlp");
         cmd.args(["--newline", "--progress", "--no-playlist"]);
-
-        // Bypass 18+ Age Restriction & Bot Challenges via iOS/Web client spoofing
-        cmd.args([
-            "--extractor-args",
-            "youtube:player_client=ios,web;youtube:player_skip=configs,webpage",
-        ]);
 
         // Ensure Deno JS runtime
         if find_exe_in_augmented_path("deno").is_some() {
