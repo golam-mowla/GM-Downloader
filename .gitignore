@@ -19,3 +19,10 @@ yarn-error.log*
 # OS
 .DS_Store
 Thumbs.db
+
+# Android
+*.apk
+*.keystore
+local.properties
+.gradle/
+build/
