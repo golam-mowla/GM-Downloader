@@ -1,5 +1,8 @@
 package com.golammowla.gmdownloader;
 
+import android.app.DownloadManager;
+import android.content.Intent;
+import android.net.Uri;
 import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
@@ -58,6 +61,39 @@ public class GMAndroidBridge {
     }
 
     @JavascriptInterface
+    public void chooseFolder() {
+        activity.runOnUiThread(() -> {
+            activity.openFolderPicker();
+        });
+    }
+
+    public void dispatchSelectedFolder(String folderPath) {
+        if (folderPath == null || folderPath.isEmpty()) return;
+        evalJs("if (window.onAndroidFolderSelected) { window.onAndroidFolderSelected(" + JSONObject.quote(folderPath) + "); }");
+    }
+
+    @JavascriptInterface
+    public void openFolder(String folderPath) {
+        activity.runOnUiThread(() -> {
+            try {
+                Intent intent = new Intent(Intent.ACTION_VIEW);
+                Uri uri = Uri.parse("content://com.android.externalstorage.documents/document/primary%3ADownload");
+                intent.setDataAndType(uri, "vnd.android.document/directory");
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                activity.startActivity(intent);
+            } catch (Exception e) {
+                try {
+                    Intent fallback = new Intent(DownloadManager.ACTION_VIEW_DOWNLOADS);
+                    fallback.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    activity.startActivity(fallback);
+                } catch (Exception ex) {
+                    Log.e("GMDownloader", "Failed to open folder", ex);
+                }
+            }
+        });
+    }
+
+    @JavascriptInterface
     public void fetchMediaInfo(String url, String callbackId) {
         new Thread(() -> {
             try {
@@ -66,6 +102,7 @@ public class GMAndroidBridge {
                 request.addOption("--no-playlist");
                 request.addOption("--no-check-certificates");
                 request.addOption("--no-update");
+                request.addOption("--extractor-args", "youtube:player_client=android,web");
                 request.addOption("--compat-options", "manifest-filesize-approx");
                 YoutubeDLResponse response = YoutubeDL.getInstance().execute(request);
                 String json = response.getOut();
@@ -84,22 +121,27 @@ public class GMAndroidBridge {
         }).start();
     }
 
+    // Overload for 9 arguments (backwards compatibility)
     @JavascriptInterface
     public void startDownload(String taskId, String url, String formatSpec, String container, boolean enableClip, String startTime, String endTime, boolean enableSubs, String subLangs) {
+        startDownload(taskId, url, formatSpec, container, enableClip, startTime, endTime, enableSubs, subLangs, null);
+    }
+
+    @JavascriptInterface
+    public void startDownload(String taskId, String url, String formatSpec, String container, boolean enableClip, String startTime, String endTime, boolean enableSubs, String subLangs, String customSaveFolder) {
         new Thread(() -> {
             try {
-                File saveDir = new File(getDownloadPath());
-                YoutubeDLRequest request = new YoutubeDLRequest(url);
-                request.addOption("-o", saveDir.getAbsolutePath() + "/%(title)s.%(ext)s");
-                request.addOption("--no-part");
-                request.addOption("--no-check-certificates");
-                request.addOption("--no-update");
-
-                if (formatSpec != null && !formatSpec.isEmpty() && !formatSpec.equals("best")) {
-                    request.addOption("-f", formatSpec);
+                File saveDir;
+                if (customSaveFolder != null && !customSaveFolder.trim().isEmpty()) {
+                    saveDir = new File(customSaveFolder.trim());
+                } else {
+                    saveDir = new File(getDownloadPath());
+                }
+                if (!saveDir.exists()) {
+                    saveDir.mkdirs();
                 }
 
-                // Proper clean container & audio extraction handling
+                // Clean container & audio extraction handling
                 String cUpper = container != null ? container.toUpperCase() : "";
                 String targetExt = null;
                 boolean isAudio = cUpper.contains("AUDIO");
@@ -115,6 +157,20 @@ public class GMAndroidBridge {
                 else if (cUpper.startsWith("FLAC")) targetExt = "flac";
                 else if (cUpper.startsWith("WAV")) targetExt = "wav";
                 else if (cUpper.startsWith("OGG")) targetExt = "ogg";
+
+                YoutubeDLRequest request = new YoutubeDLRequest(url);
+                request.addOption("-o", saveDir.getAbsolutePath() + "/%(title)s.%(ext)s");
+                request.addOption("--no-part");
+                request.addOption("--no-check-certificates");
+                request.addOption("--no-update");
+                request.addOption("--extractor-args", "youtube:player_client=android,web");
+                request.addOption("--compat-options", "manifest-filesize-approx");
+
+                if (formatSpec != null && !formatSpec.isEmpty() && !formatSpec.equals("best")) {
+                    request.addOption("-f", formatSpec + "/bestvideo+bestaudio/best");
+                } else {
+                    request.addOption("-f", "bestvideo+bestaudio/best");
+                }
 
                 if (targetExt != null) {
                     if (isAudio) {
@@ -135,13 +191,48 @@ public class GMAndroidBridge {
                     }
                 }
 
-                evalJs("window.onAndroidLog(" + JSONObject.quote("[Android yt-dlp] Starting download for task " + taskId) + ");");
+                evalJs("window.onAndroidLog(" + JSONObject.quote("[Android yt-dlp] Starting download for task " + taskId + " into " + saveDir.getAbsolutePath()) + ");");
 
-                YoutubeDL.getInstance().execute(request, taskId, (progress, eta, line) -> {
-                    evalJs("window.onAndroidProgress(" + JSONObject.quote(taskId) + ", " + progress + ", " + eta + ", " + JSONObject.quote(line) + ");");
-                    evalJs("window.onAndroidLog(" + JSONObject.quote(line) + ");");
-                    return Unit.INSTANCE;
-                });
+                try {
+                    YoutubeDL.getInstance().execute(request, taskId, (progress, eta, line) -> {
+                        evalJs("window.onAndroidProgress(" + JSONObject.quote(taskId) + ", " + progress + ", " + eta + ", " + JSONObject.quote(line) + ");");
+                        evalJs("window.onAndroidLog(" + JSONObject.quote(line) + ");");
+                        return Unit.INSTANCE;
+                    });
+                } catch (Exception execErr) {
+                    String execMsg = execErr.getMessage() != null ? execErr.getMessage() : "";
+                    if (execMsg.contains("403") || execMsg.contains("SABR") || execMsg.contains("Forbidden")) {
+                        evalJs("window.onAndroidLog(" + JSONObject.quote("[Android yt-dlp] 403 / SABR stream restriction detected. Switching to Android Native Direct Stream fallback...") + ");");
+
+                        YoutubeDLRequest fallbackReq = new YoutubeDLRequest(url);
+                        fallbackReq.addOption("-o", saveDir.getAbsolutePath() + "/%(title)s.%(ext)s");
+                        fallbackReq.addOption("--no-part");
+                        fallbackReq.addOption("--no-check-certificates");
+                        fallbackReq.addOption("--no-update");
+                        fallbackReq.addOption("--extractor-args", "youtube:player_client=android");
+                        fallbackReq.addOption("-f", "bestvideo[protocol^=http]+bestaudio[protocol^=http]/best[protocol^=http]/best");
+
+                        if (targetExt != null) {
+                            if (isAudio) {
+                                fallbackReq.addOption("-x");
+                                fallbackReq.addOption("--audio-format", targetExt);
+                            } else {
+                                fallbackReq.addOption("--merge-output-format", targetExt);
+                            }
+                        }
+                        if (enableClip && startTime != null && endTime != null && !startTime.isEmpty()) {
+                            fallbackReq.addOption("--download-sections", "*" + startTime + "-" + endTime);
+                        }
+
+                        YoutubeDL.getInstance().execute(fallbackReq, taskId, (progress, eta, line) -> {
+                            evalJs("window.onAndroidProgress(" + JSONObject.quote(taskId) + ", " + progress + ", " + eta + ", " + JSONObject.quote(line) + ");");
+                            evalJs("window.onAndroidLog(" + JSONObject.quote(line) + ");");
+                            return Unit.INSTANCE;
+                        });
+                    } else {
+                        throw execErr;
+                    }
+                }
 
                 evalJs("window.onAndroidComplete(" + JSONObject.quote(taskId) + ", true, null);");
             } catch (Exception e) {

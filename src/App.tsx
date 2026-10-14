@@ -398,12 +398,29 @@ export function App() {
         try {
           const androidPath = (window as any).GMAndroidBridge.getDownloadPath();
           if (androidPath) {
-            setOptions((prev) => ({ ...prev, saveFolder: androidPath }));
+            setOptions((prev) => {
+              if (!prev.saveFolder || prev.saveFolder.startsWith("D:\\") || prev.saveFolder.startsWith("C:\\")) {
+                return { ...prev, saveFolder: androidPath };
+              }
+              return prev;
+            });
           }
         } catch {
           // ignore
         }
       }
+
+      // Handle folder chosen via native Android folder picker (SAF)
+      (window as any).onAndroidFolderSelected = (folderPath: string) => {
+        if (folderPath && typeof folderPath === "string") {
+          const cleanPath = folderPath.trim();
+          setOptions((prev) => ({ ...prev, saveFolder: cleanPath }));
+          setProgress((prev) => ({
+            ...prev,
+            text: `Selected save folder: ${cleanPath}`,
+          }));
+        }
+      };
 
       // Handle URLs shared from YouTube, browsers, or other apps
       (window as any).onAndroidSharedUrl = (sharedUrl: string) => {
@@ -639,6 +656,14 @@ export function App() {
   };
 
   const handleBrowseFolder = async () => {
+    if ((window as any).GMAndroidBridge?.chooseFolder) {
+      try {
+        (window as any).GMAndroidBridge.chooseFolder();
+        return;
+      } catch {
+        // ignore
+      }
+    }
     try {
       const selected = await open({
         directory: true,
@@ -670,6 +695,14 @@ export function App() {
 
   const handleOpenFolder = async (folderPath?: string) => {
     const target = folderPath || options.saveFolder;
+    if ((window as any).GMAndroidBridge?.openFolder) {
+      try {
+        (window as any).GMAndroidBridge.openFolder(target);
+        return;
+      } catch {
+        // ignore
+      }
+    }
     try {
       await invoke("open_folder", { path: target });
     } catch {
@@ -754,7 +787,8 @@ export function App() {
           effectiveOptions.startTime,
           effectiveOptions.endTime,
           effectiveOptions.enableSubtitles,
-          effectiveOptions.subtitleLang
+          effectiveOptions.subtitleLang,
+          effectiveOptions.saveFolder
         );
       } else {
         await invoke<string>("start_download", {
