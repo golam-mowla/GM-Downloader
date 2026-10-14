@@ -124,11 +124,17 @@ public class GMAndroidBridge {
     // Overload for 9 arguments (backwards compatibility)
     @JavascriptInterface
     public void startDownload(String taskId, String url, String formatSpec, String container, boolean enableClip, String startTime, String endTime, boolean enableSubs, String subLangs) {
-        startDownload(taskId, url, formatSpec, container, enableClip, startTime, endTime, enableSubs, subLangs, null);
+        startDownload(taskId, url, formatSpec, container, enableClip, startTime, endTime, enableSubs, subLangs, null, null);
+    }
+
+    // Overload for 10 arguments (backwards compatibility)
+    @JavascriptInterface
+    public void startDownload(String taskId, String url, String formatSpec, String container, boolean enableClip, String startTime, String endTime, boolean enableSubs, String subLangs, String customSaveFolder) {
+        startDownload(taskId, url, formatSpec, container, enableClip, startTime, endTime, enableSubs, subLangs, customSaveFolder, null);
     }
 
     @JavascriptInterface
-    public void startDownload(String taskId, String url, String formatSpec, String container, boolean enableClip, String startTime, String endTime, boolean enableSubs, String subLangs, String customSaveFolder) {
+    public void startDownload(String taskId, String url, String formatSpec, String container, boolean enableClip, String startTime, String endTime, boolean enableSubs, String subLangs, String customSaveFolder, String customFilename) {
         new Thread(() -> {
             try {
                 File saveDir;
@@ -159,7 +165,12 @@ public class GMAndroidBridge {
                 else if (cUpper.startsWith("OGG")) targetExt = "ogg";
 
                 YoutubeDLRequest request = new YoutubeDLRequest(url);
-                request.addOption("-o", saveDir.getAbsolutePath() + "/%(title)s.%(ext)s");
+                String filenameTmpl = "%(title)s.%(ext)s";
+                if (customFilename != null && !customFilename.trim().isEmpty()) {
+                    String sanitized = customFilename.trim().replaceAll("[\\\\/:*?\"<>|]", "_");
+                    filenameTmpl = sanitized + ".%(ext)s";
+                }
+                request.addOption("-o", saveDir.getAbsolutePath() + "/" + filenameTmpl);
                 request.addOption("--no-part");
                 request.addOption("--no-check-certificates");
                 request.addOption("--no-update");

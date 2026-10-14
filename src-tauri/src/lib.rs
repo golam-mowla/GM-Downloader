@@ -61,6 +61,7 @@ pub struct DownloadOptions {
     pub task_id: Option<String>,
     pub url: String,
     pub save_folder: String,
+    pub custom_filename: Option<String>,
     pub download_mode: String, // "video" | "audio" | "subtitles"
     pub container: String,     // "Video (Generic)", "MP4 (Video)", "WEBM (Video)", "MKV (Video)", "MOV (Video)", "AVI (Video)", "Audio (Generic)", "MP3 (Audio)", "M4A (Audio)", "OPUS (Audio)", "FLAC (Audio)", "WAV (Audio)", "OGG (Audio)"
     pub video_stream_id: String,
@@ -736,7 +737,42 @@ async fn start_download(
             suffix_tag = format!(" [Clip {} to {}]", s_clean, e_clean);
         }
 
-        let out_tmpl = if options.include_media_id {
+        let out_tmpl = if let Some(ref custom_name) = options.custom_filename {
+            let trimmed = custom_name.trim();
+            if !trimmed.is_empty() {
+                let sanitized: String = trimmed.chars().map(|c| match c {
+                    '\\' | '/' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+                    _ => c,
+                }).collect();
+                if options.include_media_id {
+                    format!(
+                        "{}/{}{} [%(id)s].%(ext)s",
+                        options.save_folder.trim_end_matches(&['/', '\\'][..]),
+                        sanitized,
+                        suffix_tag
+                    )
+                } else {
+                    format!(
+                        "{}/{}{}.%(ext)s",
+                        options.save_folder.trim_end_matches(&['/', '\\'][..]),
+                        sanitized,
+                        suffix_tag
+                    )
+                }
+            } else if options.include_media_id {
+                format!(
+                    "{}/%(title).140s{} [%(id)s].%(ext)s",
+                    options.save_folder.trim_end_matches(&['/', '\\'][..]),
+                    suffix_tag
+                )
+            } else {
+                format!(
+                    "{}/%(title).150s{}.%(ext)s",
+                    options.save_folder.trim_end_matches(&['/', '\\'][..]),
+                    suffix_tag
+                )
+            }
+        } else if options.include_media_id {
             format!(
                 "{}/%(title).140s{} [%(id)s].%(ext)s",
                 options.save_folder.trim_end_matches(&['/', '\\'][..]),
@@ -1342,6 +1378,89 @@ async fn open_folder(path: String) -> Result<(), String> {
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Command 6: 1-Click App Updater (Downloads & Launches Installer from GitHub)
+// ---------------------------------------------------------------------------
+
+#[command]
+async fn install_app_update(_app: AppHandle, download_url: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let temp_dir = env::temp_dir();
+
+        #[cfg(target_os = "windows")]
+        {
+            let installer_path = temp_dir.join("GM-Downloader-Setup.exe");
+            let installer_str = installer_path.to_string_lossy().to_string();
+
+            // Try curl.exe first
+            let curl_res = Command::new("curl.exe")
+                .args(["-L", "-f", "-s", "-S", "-o", &installer_str, &download_url])
+                .status();
+
+            let success = match curl_res {
+                Ok(s) if s.success() => true,
+                _ => {
+                    let ps_script = format!(
+                        "$ProgressPreference = 'SilentlyContinue'; [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; (New-Object System.Net.WebClient).DownloadFile('{}', '{}')",
+                        download_url,
+                        installer_str.replace('\\', "\\\\")
+                    );
+                    let mut cmd = Command::new("powershell");
+                    cmd.args(["-NoProfile", "-NonInteractive", "-Command", &ps_script]);
+                    cmd.creation_flags(CREATE_NO_WINDOW);
+                    cmd.status().map(|s| s.success()).unwrap_or(false)
+                }
+            };
+
+            if !success || !installer_path.exists() {
+                return Err("Failed to download update installer from GitHub.".to_string());
+            }
+
+            // Launch installer in background
+            let _ = Command::new(&installer_path).spawn();
+
+            // Exit current application after slight delay to prevent file locks
+            std::thread::sleep(std::time::Duration::from_millis(1000));
+            std::process::exit(0);
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            let dest = temp_dir.join("GM-Downloader-macOS.zip");
+            let dest_str = dest.to_string_lossy().to_string();
+            let status = Command::new("curl")
+                .args(["-L", "-f", "-o", &dest_str, &download_url])
+                .status()
+                .map_err(|e| format!("Failed to download update: {}", e))?;
+            if status.success() {
+                let _ = Command::new("open").arg(&dest_str).spawn();
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                std::process::exit(0);
+            }
+            return Err("Failed to download macOS update.".to_string());
+        }
+
+        #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+        {
+            let dest = temp_dir.join("GM-Downloader-Linux.AppImage");
+            let dest_str = dest.to_string_lossy().to_string();
+            let status = Command::new("curl")
+                .args(["-L", "-f", "-o", &dest_str, &download_url])
+                .status()
+                .map_err(|e| format!("Failed to download update: {}", e))?;
+            if status.success() {
+                let _ = Command::new("chmod").args(["+x", &dest_str]).status();
+                let _ = Command::new(&dest_str).spawn();
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                std::process::exit(0);
+            }
+            return Err("Failed to download Linux update.".to_string());
+        }
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -1358,7 +1477,8 @@ pub fn run() {
             cancel_download,
             check_tool_updates,
             update_tool,
-            open_folder
+            open_folder,
+            install_app_update
         ])
         .run(tauri::generate_context!())
         .expect("error while running GM Downloader");

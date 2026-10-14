@@ -1,10 +1,8 @@
 import React, { useState, useRef, useEffect } from "react";
 import {
-  ShieldCheck,
   Sparkles,
   Terminal,
   ArrowRight,
-  ShieldAlert,
   Plus,
   HelpCircle,
   Github,
@@ -118,24 +116,6 @@ export const Header: React.FC<HeaderProps> = ({
             </button>
           )}
 
-          {/* 18+ Age Restriction Bypass Active Badge */}
-          <div
-            title="18+ Age-Restricted video bypass is active"
-            className="hidden lg:flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-xs font-bold bg-purple-50 dark:bg-purple-950/50 text-purple-700 dark:text-purple-300 border border-purple-200 dark:border-purple-800"
-          >
-            <ShieldAlert className="w-3.5 h-3.5 text-purple-600" />
-            <span>18+ Bypass Active</span>
-          </div>
-
-          {/* Auto-Resume Active Badge */}
-          <div
-            title="Downloads automatically resume from saved .part files across network cuts"
-            className="hidden xl:flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-xs font-bold bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800"
-          >
-            <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
-            <span>Resume Ready</span>
-          </div>
-
           {/* HELP MENU DROPDOWN (Matches User's Image 4: Parabolic Help Menu) */}
           <div className="relative" ref={helpMenuRef}>
             <button
@@ -233,7 +213,7 @@ export const Header: React.FC<HeaderProps> = ({
                 className="w-16 h-16 object-contain mx-auto drop-shadow-md"
               />
               <h3 className="text-lg font-black text-slate-900 dark:text-white">
-                GM Downloader v2.0.0
+                GM Downloader v2.0.1
               </h3>
               <p className="text-xs text-slate-500 dark:text-slate-400">
                 Created by Golam Mowla &bull; Powered by yt-dlp, FFmpeg &amp; Deno

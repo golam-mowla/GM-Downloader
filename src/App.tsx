@@ -124,6 +124,7 @@ const parseRawYtdlJsonToMediaInfo = (raw: any): MediaInfo => {
 const DEFAULT_OPTIONS: DownloadOptions = {
   url: "",
   saveFolder: "D:\\00VideoEditing Tools\\yt-dlp\\Downloads",
+  customFilename: "",
   downloadMode: "video",
   container: "MP4 (Video)",
   videoStreamId: "best",
@@ -253,6 +254,9 @@ export function App() {
   const [updateSuccess, setUpdateSuccess] = useState<string | null>(null);
   const [appHasUpdate, setAppHasUpdate] = useState(false);
   const [latestAppVersion, setLatestAppVersion] = useState<string | undefined>(undefined);
+  const [latestReleaseUrl, setLatestReleaseUrl] = useState<string>("");
+  const [latestReleaseAssets, setLatestReleaseAssets] = useState<any[]>([]);
+  const [isUpdatingApp, setIsUpdatingApp] = useState(false);
 
   const currentTaskIdRef = useRef<string | null>(null);
 
@@ -502,13 +506,94 @@ export function App() {
       if (ghRes.ok) {
         const ghData = await ghRes.json();
         const tag = ghData.tag_name ? ghData.tag_name.replace("v", "") : "";
+        setLatestReleaseUrl(ghData.html_url || "");
+        setLatestReleaseAssets(Array.isArray(ghData.assets) ? ghData.assets : []);
         if (tag && tag !== CURRENT_APP_VERSION) {
           setAppHasUpdate(true);
           setLatestAppVersion(`v${tag}`);
+        } else {
+          setAppHasUpdate(false);
+          setLatestAppVersion(`v${CURRENT_APP_VERSION}`);
         }
       }
     } catch {
       // ignore
+    }
+  };
+
+  const handle1ClickAppUpdate = async () => {
+    setIsUpdatingApp(true);
+    try {
+      const isAndroid = (window as any).GMAndroidBridge?.isAndroidAvailable?.();
+      if (isAndroid) {
+        const apkAsset =
+          latestReleaseAssets.find((a: any) =>
+            a.name?.toLowerCase().includes("universal")
+          ) ||
+          latestReleaseAssets.find((a: any) =>
+            a.name?.toLowerCase().includes("arm64")
+          ) ||
+          latestReleaseAssets.find((a: any) =>
+            a.name?.toLowerCase().endsWith(".apk")
+          );
+        if (apkAsset?.browser_download_url) {
+          window.open(apkAsset.browser_download_url, "_blank");
+        } else {
+          window.open(
+            latestReleaseUrl ||
+              "https://github.com/golam-mowla/GM-Downloader/releases/latest",
+            "_blank"
+          );
+        }
+        setIsUpdatingApp(false);
+        return;
+      }
+
+      // PC (Windows / Linux / macOS)
+      const ua = navigator.userAgent.toLowerCase();
+      let targetAsset = null;
+      if (ua.includes("win")) {
+        targetAsset =
+          latestReleaseAssets.find((a: any) =>
+            a.name?.toLowerCase().includes("setup.exe")
+          ) ||
+          latestReleaseAssets.find((a: any) =>
+            a.name?.toLowerCase().endsWith(".exe")
+          );
+      } else if (ua.includes("mac")) {
+        targetAsset =
+          latestReleaseAssets.find((a: any) =>
+            a.name?.toLowerCase().endsWith(".zip") ||
+            a.name?.toLowerCase().endsWith(".dmg")
+          );
+      } else {
+        targetAsset =
+          latestReleaseAssets.find((a: any) =>
+            a.name?.toLowerCase().endsWith(".appimage") ||
+            a.name?.toLowerCase().endsWith(".deb")
+          );
+      }
+
+      const downloadUrl =
+        targetAsset?.browser_download_url ||
+        `https://github.com/golam-mowla/GM-Downloader/releases/download/${latestAppVersion || "v" + CURRENT_APP_VERSION}/GM-Downloader-Setup.exe`;
+
+      setProgress({
+        percent: 60,
+        text: `Downloading GM Downloader update (${latestAppVersion || "latest"})... Installer will launch automatically.`,
+        status: "processing",
+      });
+
+      await invoke("install_app_update", { downloadUrl });
+    } catch (err: any) {
+      setIsUpdatingApp(false);
+      const msg = typeof err === "string" ? err : err?.message || String(err);
+      alert(`Update Error: ${msg}\nOpening GitHub releases page instead.`);
+      window.open(
+        latestReleaseUrl ||
+          "https://github.com/golam-mowla/GM-Downloader/releases/latest",
+        "_blank"
+      );
     }
   };
 
@@ -629,6 +714,7 @@ export function App() {
 
       setOptions((prev) => ({
         ...prev,
+        customFilename: info.title,
         videoStreamId: "best",
         audioStreamId: "ba",
         subtitleLang:
@@ -730,6 +816,7 @@ export function App() {
           )?.label || "Best Quality";
 
     const taskTitle =
+      effectiveOptions.customFilename?.trim() ||
       mediaInfo?.title ||
       tasks.find((t) => t.id === existingTaskId)?.title ||
       url;
@@ -737,6 +824,7 @@ export function App() {
     const newTask: DownloadTask = {
       id: taskId,
       title: taskTitle,
+      customFilename: effectiveOptions.customFilename?.trim(),
       url,
       thumbnail: mediaInfo?.thumbnail,
       container: effectiveOptions.container,
@@ -788,7 +876,8 @@ export function App() {
           effectiveOptions.endTime,
           effectiveOptions.enableSubtitles,
           effectiveOptions.subtitleLang,
-          effectiveOptions.saveFolder
+          effectiveOptions.saveFolder,
+          effectiveOptions.customFilename?.trim() || ""
         );
       } else {
         await invoke<string>("start_download", {
@@ -1071,6 +1160,10 @@ export function App() {
             onUpdateAll={handleUpdateAllTools}
             updateLogs={updateLogs}
             successMessage={updateSuccess}
+            appHasUpdate={appHasUpdate}
+            latestAppVersion={latestAppVersion}
+            isUpdatingApp={isUpdatingApp}
+            on1ClickAppUpdate={handle1ClickAppUpdate}
           />
         )}
       </main>

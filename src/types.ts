@@ -64,6 +64,7 @@ export interface DownloadOptions {
   taskId?: string;
   url: string;
   saveFolder: string;
+  customFilename?: string;
   downloadMode: DownloadMode;
   container: ContainerFormat;
   videoStreamId: string;
@@ -145,6 +146,7 @@ export interface DownloadProgress {
 export interface DownloadTask {
   id: string;
   title: string;
+  customFilename?: string;
   url: string;
   thumbnail?: string;
   container: string;
