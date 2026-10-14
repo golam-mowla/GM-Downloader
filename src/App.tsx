@@ -31,27 +31,48 @@ const parseRawYtdlJsonToMediaInfo = (raw: any): MediaInfo => {
   const formats = Array.isArray(raw.formats) ? raw.formats : [];
 
   const videoStreams = formats
-    .filter((f: any) => f.vcodec && f.vcodec !== "none")
-    .map((f: any) => ({
-      id: String(f.format_id),
-      label: `${f.resolution || (f.height ? `${f.height}p` : "Video")} • ${f.ext || "mp4"} • ${(f.vcodec || "").split(".")[0]}`,
-      ext: f.ext || "mp4",
-      resolution: f.resolution || (f.height ? `${f.height}p` : "HD"),
-      fps: f.fps || 30,
-      height: f.height || 0,
-      filesize: f.filesize
+    .filter((f: any) => {
+      if (f.format_note === "storyboard" || f.ext === "mhtml" || f.protocol === "mhtml") return false;
+      return f.vcodec && f.vcodec !== "none";
+    })
+    .map((f: any) => {
+      const h = f.height || (f.resolution ? parseInt(String(f.resolution).replace(/[^0-9]/g, "")) : 0);
+      let resTag = "Video";
+      if (h >= 2160) resTag = `${h}p (4K UHD)`;
+      else if (h >= 1440) resTag = `${h}p (2K QHD)`;
+      else if (h >= 1080) resTag = `${h}p (Full HD)`;
+      else if (h >= 720) resTag = `${h}p (HD)`;
+      else if (h > 0) resTag = `${h}p`;
+      else if (f.resolution) resTag = String(f.resolution);
+      else if (f.format_note) resTag = String(f.format_note);
+
+      const fpsTag = f.fps ? `${Math.round(f.fps)}fps` : "";
+      const codec = (f.vcodec || "").split(".")[0];
+      const audioBadge = f.acodec && f.acodec !== "none" ? " [+Audio]" : "";
+
+      const sizeStr = f.filesize
         ? `${(f.filesize / (1024 * 1024)).toFixed(1)} MB`
         : f.filesize_approx
         ? `~${(f.filesize_approx / (1024 * 1024)).toFixed(1)} MB`
-        : "Dynamic",
-      vcodec: f.vcodec || "",
-      acodec: f.acodec || "",
-    }))
-    .sort((a: any, b: any) => {
-      const hA = a.height || parseInt(String(a.resolution || "").replace(/[^0-9]/g, "")) || 0;
-      const hB = b.height || parseInt(String(b.resolution || "").replace(/[^0-9]/g, "")) || 0;
-      return hB - hA;
-    });
+        : "";
+
+      const parts = [resTag, (f.ext || "mp4").toUpperCase(), codec, fpsTag, sizeStr].filter(Boolean);
+      const label = parts.join(" • ") + audioBadge;
+
+      return {
+        id: String(f.format_id),
+        label,
+        ext: f.ext || "mp4",
+        resolution: resTag,
+        fps: f.fps ? Math.round(f.fps) : 30,
+        height: h,
+        filesize: sizeStr || "Dynamic",
+        vcodec: f.vcodec || "",
+        acodec: f.acodec || "",
+        hasAudio: f.acodec && f.acodec !== "none",
+      };
+    })
+    .sort((a: any, b: any) => (b.height || 0) - (a.height || 0));
 
   const audioStreams = formats
     .filter(

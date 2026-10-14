@@ -102,7 +102,6 @@ public class GMAndroidBridge {
                 request.addOption("--no-playlist");
                 request.addOption("--no-check-certificates");
                 request.addOption("--no-update");
-                request.addOption("--extractor-args", "youtube:player_client=android,web");
                 request.addOption("--compat-options", "manifest-filesize-approx");
                 YoutubeDLResponse response = YoutubeDL.getInstance().execute(request);
                 String json = response.getOut();
@@ -116,6 +115,29 @@ public class GMAndroidBridge {
                 evalJs("window.onAndroidFetchSuccess(" + JSONObject.quote(callbackId) + ", " + json + ");");
             } catch (Exception e) {
                 Log.e("GMDownloader", "fetchMediaInfo error", e);
+                // Fallback attempt: if default failed, retry with ios,web
+                try {
+                    YoutubeDLRequest fallback = new YoutubeDLRequest(url);
+                    fallback.addOption("--dump-single-json");
+                    fallback.addOption("--no-playlist");
+                    fallback.addOption("--no-check-certificates");
+                    fallback.addOption("--no-update");
+                    fallback.addOption("--extractor-args", "youtube:player_client=ios,web");
+                    fallback.addOption("--compat-options", "manifest-filesize-approx");
+                    YoutubeDLResponse fallbackResp = YoutubeDL.getInstance().execute(fallback);
+                    String json = fallbackResp.getOut();
+                    if (json != null) {
+                        int start = json.indexOf('{');
+                        int end = json.lastIndexOf('}');
+                        if (start >= 0 && end > start) {
+                            json = json.substring(start, end + 1);
+                        }
+                    }
+                    evalJs("window.onAndroidFetchSuccess(" + JSONObject.quote(callbackId) + ", " + json + ");");
+                    return;
+                } catch (Exception ex2) {
+                    Log.e("GMDownloader", "fetchMediaInfo fallback error", ex2);
+                }
                 evalJs("window.onAndroidFetchError(" + JSONObject.quote(callbackId) + ", " + JSONObject.quote(e.getMessage() != null ? e.getMessage() : e.toString()) + ");");
             }
         }).start();
@@ -174,7 +196,6 @@ public class GMAndroidBridge {
                 request.addOption("--no-part");
                 request.addOption("--no-check-certificates");
                 request.addOption("--no-update");
-                request.addOption("--extractor-args", "youtube:player_client=android,web");
                 request.addOption("--compat-options", "manifest-filesize-approx");
 
                 if (formatSpec != null && !formatSpec.isEmpty() && !formatSpec.equals("best")) {
