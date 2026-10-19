@@ -783,6 +783,8 @@ async fn start_download(
             }
         }
 
+        let is_subtitles_only = options.download_mode == "subtitles";
+
         // Timeframe / Clipping Setup & Filename Suffix
         let mut is_clipping_active = false;
         let mut clip_target_duration: Option<f64> = None;
@@ -883,7 +885,6 @@ async fn start_download(
         }
 
         // Mode & Container Handling
-        let is_subtitles_only = options.download_mode == "subtitles";
         let container_upper = options.container.to_uppercase();
         let is_audio_container = options.download_mode == "audio"
             || container_upper.contains("(AUDIO)");
