@@ -33,22 +33,30 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
       }
     }
 
-    // 2. Fallbacks from contextMenus info
-    if (!candidateUrl) {
-      if (info.linkUrl) {
+    // 2. Fallbacks from contextMenus info (strictly ignore blob/data URLs)
+    const isClean = (u) => u && typeof u === "string" && !u.startsWith("blob:") && !u.startsWith("data:") && (u.startsWith("http://") || u.startsWith("https://"));
+
+    if (!isClean(candidateUrl)) {
+      if (isClean(info.linkUrl)) {
         candidateUrl = info.linkUrl;
-      } else if (info.srcUrl) {
+      } else if (isClean(info.srcUrl)) {
         candidateUrl = info.srcUrl;
-      } else if (info.selectionText && info.selectionText.trim().startsWith("http")) {
+      } else if (info.selectionText && isClean(info.selectionText.trim())) {
         candidateUrl = info.selectionText.trim();
-      } else if (info.pageUrl) {
+      } else if (isClean(info.pageUrl)) {
         candidateUrl = info.pageUrl;
-      } else if (tab && tab.url) {
+      } else if (tab && isClean(tab.url)) {
         candidateUrl = tab.url;
       }
     }
 
-    if (!candidateUrl) return;
+    if (!isClean(candidateUrl)) {
+      if (tab && isClean(tab.url)) {
+        candidateUrl = tab.url;
+      } else {
+        return;
+      }
+    }
 
     await sendUrlToParrot(candidateUrl, tab ? tab.id : null);
   }
@@ -56,8 +64,20 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
 
 // Send URL to Parrot Desktop App
 async function sendUrlToParrot(mediaUrl, tabId) {
-  const cleanUrl = mediaUrl.trim();
+  let cleanUrl = (mediaUrl || "").trim();
   if (!cleanUrl) return;
+
+  // Clean blob URL if accidentally passed
+  if (cleanUrl.startsWith("blob:")) {
+    if (tabId) {
+      try {
+        const t = await chrome.tabs.get(tabId);
+        if (t && t.url && !t.url.startsWith("blob:")) {
+          cleanUrl = t.url;
+        }
+      } catch {}
+    }
+  }
 
   // Resolve active tab if not passed (e.g. called from popup)
   let effectiveTabId = tabId;

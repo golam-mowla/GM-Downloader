@@ -3,6 +3,19 @@
   let lastRightClickedElement = null;
   let lastDetectedMediaUrl = null;
 
+  function isValidDownloadUrl(url) {
+    if (!url || typeof url !== "string") return false;
+    const clean = url.trim();
+    if (
+      clean.startsWith("blob:") ||
+      clean.startsWith("data:") ||
+      clean.startsWith("javascript:")
+    ) {
+      return false;
+    }
+    return clean.startsWith("http://") || clean.startsWith("https://");
+  }
+
   // Listen to right-click / contextmenu events
   document.addEventListener(
     "contextmenu",
@@ -31,14 +44,16 @@
 
     // 1. INSTAGRAM DETECTION
     if (hostname.includes("instagram.com")) {
-      // If currently directly viewing a reel or post
       const path = window.location.pathname;
-      if (path.startsWith("/reel/") || path.startsWith("/p/") || path.startsWith("/tv/")) {
-        // If clicking on this reel/post itself, return full permalink
+      if (
+        path.startsWith("/reel/") ||
+        path.startsWith("/p/") ||
+        path.startsWith("/tv/")
+      ) {
         return `${window.location.origin}${path}`;
       }
 
-      // Check if user right-clicked inside a feed article or reel card
+      // Check feed article or reel card
       const article =
         element.closest("article") ||
         element.closest('div[role="dialog"]') ||
@@ -46,13 +61,13 @@
         element.closest("div._ab8w");
 
       if (article) {
-        // Look for post or reel link
-        const link = article.querySelector('a[href*="/reel/"], a[href*="/p/"], a[href*="/tv/"]');
+        const link = article.querySelector(
+          'a[href*="/reel/"], a[href*="/p/"], a[href*="/tv/"]'
+        );
         if (link && link.getAttribute("href")) {
           return new URL(link.getAttribute("href"), window.location.origin).href;
         }
 
-        // Look for timestamp link
         const timeEl = article.querySelector("time");
         if (timeEl) {
           const timeLink = timeEl.closest("a");
@@ -62,56 +77,74 @@
         }
       }
 
-      // Nearest anchor
       const nearestAnchor = element.closest("a");
       if (nearestAnchor && nearestAnchor.getAttribute("href")) {
         const href = nearestAnchor.getAttribute("href");
-        if (href.includes("/p/") || href.includes("/reel/") || href.includes("/tv/")) {
+        if (
+          href.includes("/p/") ||
+          href.includes("/reel/") ||
+          href.includes("/tv/")
+        ) {
           return new URL(href, window.location.origin).href;
         }
       }
+
+      return window.location.href;
     }
 
-    // 2. YOUTUBE DETECTION
+    // 2. YOUTUBE DETECTION (Never use blob or video element src on YouTube)
     if (hostname.includes("youtube.com") || hostname.includes("youtu.be")) {
       if (hostname.includes("youtu.be")) {
         return window.location.href;
       }
-      if (window.location.pathname.startsWith("/watch") || window.location.pathname.startsWith("/shorts/")) {
+      if (
+        window.location.pathname.startsWith("/watch") ||
+        window.location.pathname.startsWith("/shorts/")
+      ) {
         return window.location.href;
       }
 
       // Thumbnail or card on feed/search
       const card = element.closest(
-        "ytd-rich-item-renderer, ytd-video-renderer, ytd-grid-video-renderer, ytd-compact-video-renderer, ytd-reel-video-renderer"
+        "ytd-rich-item-renderer, ytd-video-renderer, ytd-grid-video-renderer, ytd-compact-video-renderer, ytd-reel-video-renderer, ytd-rich-grid-media"
       );
       if (card) {
-        const titleAnchor = card.querySelector("a#video-title, a#thumbnail, a.ytd-thumbnail");
+        const titleAnchor = card.querySelector(
+          "a#video-title, a#thumbnail, a.ytd-thumbnail, a[href*='/watch'], a[href*='/shorts/']"
+        );
         if (titleAnchor && titleAnchor.getAttribute("href")) {
           return new URL(titleAnchor.getAttribute("href"), "https://www.youtube.com").href;
         }
       }
 
-      const ytAnchor = element.closest("a#thumbnail, a#video-title");
+      const ytAnchor = element.closest("a#thumbnail, a#video-title, a[href*='/watch'], a[href*='/shorts/']");
       if (ytAnchor && ytAnchor.getAttribute("href")) {
         return new URL(ytAnchor.getAttribute("href"), "https://www.youtube.com").href;
       }
+
+      return window.location.href;
     }
 
     // 3. FACEBOOK DETECTION
     if (hostname.includes("facebook.com")) {
-      const fbAnchor = element.closest('a[href*="/videos/"], a[href*="/reel/"], a[href*="/watch/"], a[href*="fb.watch"]');
+      const fbAnchor = element.closest(
+        'a[href*="/videos/"], a[href*="/reel/"], a[href*="/watch/"], a[href*="fb.watch"]'
+      );
       if (fbAnchor && fbAnchor.getAttribute("href")) {
         return new URL(fbAnchor.getAttribute("href"), window.location.origin).href;
       }
 
       const fbArticle = element.closest('[role="article"]');
       if (fbArticle) {
-        const vidLink = fbArticle.querySelector('a[href*="/videos/"], a[href*="/reel/"], a[href*="/watch/"]');
+        const vidLink = fbArticle.querySelector(
+          'a[href*="/videos/"], a[href*="/reel/"], a[href*="/watch/"]'
+        );
         if (vidLink && vidLink.getAttribute("href")) {
           return new URL(vidLink.getAttribute("href"), window.location.origin).href;
         }
       }
+
+      return window.location.href;
     }
 
     // 4. TIKTOK DETECTION
@@ -123,6 +156,7 @@
       if (ttAnchor && ttAnchor.getAttribute("href")) {
         return new URL(ttAnchor.getAttribute("href"), window.location.origin).href;
       }
+      return window.location.href;
     }
 
     // 5. TWITTER / X DETECTION
@@ -134,20 +168,24 @@
           return new URL(statusLink.getAttribute("href"), window.location.origin).href;
         }
       }
+      return window.location.href;
     }
 
-    // 6. DIRECT HTML5 VIDEO OR AUDIO TAG
-    const video = element.tagName === "VIDEO" ? element : element.querySelector("video") || element.closest("video");
+    // 6. DIRECT HTML5 VIDEO OR AUDIO TAG (strictly NO blobs!)
+    const video =
+      element.tagName === "VIDEO"
+        ? element
+        : element.querySelector("video") || element.closest("video");
     if (video) {
-      if (video.src && video.src.startsWith("http")) return video.src;
-      if (video.currentSrc && video.currentSrc.startsWith("http")) return video.currentSrc;
+      if (isValidDownloadUrl(video.src)) return video.src;
+      if (isValidDownloadUrl(video.currentSrc)) return video.currentSrc;
       const source = video.querySelector("source");
-      if (source && source.src && source.src.startsWith("http")) return source.src;
+      if (source && isValidDownloadUrl(source.src)) return source.src;
     }
 
     // 7. NEAREST HYPERLINK
     const anchor = element.closest("a[href]");
-    if (anchor && anchor.href && anchor.href.startsWith("http")) {
+    if (anchor && isValidDownloadUrl(anchor.href)) {
       return anchor.href;
     }
 
@@ -159,10 +197,10 @@
   chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (request.action === "GET_LAST_CLICKED_MEDIA") {
       let resolved = lastDetectedMediaUrl;
-      if (!resolved && lastRightClickedElement) {
+      if (!isValidDownloadUrl(resolved) && lastRightClickedElement) {
         resolved = extractMediaUrl(lastRightClickedElement);
       }
-      if (!resolved) {
+      if (!isValidDownloadUrl(resolved)) {
         resolved = window.location.href;
       }
       sendResponse({ url: resolved, pageUrl: window.location.href });
@@ -170,7 +208,11 @@
     }
 
     if (request.action === "SHOW_TOAST") {
-      showParrotToast(request.title || "GM Downloader", request.message, request.status || "info");
+      showParrotToast(
+        request.title || "GM Downloader",
+        request.message,
+        request.status || "info"
+      );
       sendResponse({ shown: true });
       return true;
     }
@@ -207,10 +249,12 @@
       borderRadius: "14px",
       background: bgGrad,
       color: "#ffffff",
-      fontFamily: "system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
+      fontFamily:
+        "system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
       fontSize: "13px",
       fontWeight: "500",
-      boxShadow: "0 10px 25px -5px rgba(0, 0, 0, 0.3), 0 8px 10px -6px rgba(0, 0, 0, 0.2)",
+      boxShadow:
+        "0 10px 25px -5px rgba(0, 0, 0, 0.3), 0 8px 10px -6px rgba(0, 0, 0, 0.2)",
       transition: "all 0.35s cubic-bezier(0.16, 1, 0.3, 1)",
       opacity: "0",
       transform: "translateY(20px) scale(0.95)",

@@ -741,6 +741,10 @@ export function App() {
       setFetchError("Please enter or paste a video URL before fetching.");
       return;
     }
+    if (url.startsWith("blob:")) {
+      setFetchError("Browser blob URLs cannot be downloaded directly. Please use the webpage video URL (e.g. YouTube watch link or Instagram post/reel link).");
+      return;
+    }
     if (typeof overrideUrl === "string") {
       setOptions((prev) => ({ ...prev, url }));
     }
@@ -787,6 +791,7 @@ export function App() {
       }
 
       setMediaInfo(info);
+      setFetchError(null);
 
       setOptions((prev) => ({
         ...prev,

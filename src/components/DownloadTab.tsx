@@ -193,7 +193,7 @@ export const DownloadTab: React.FC<DownloadTabProps> = ({
         </div>
 
         {/* Fetch Error Alert */}
-        {fetchError && (
+        {fetchError && !mediaInfo && (
           <div className="mt-3 p-3 rounded-xl bg-rose-50 dark:bg-rose-950/50 border border-rose-200 dark:border-rose-800 flex items-start gap-2.5 text-xs text-rose-700 dark:text-rose-300">
             <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
             <div className="flex-1">
