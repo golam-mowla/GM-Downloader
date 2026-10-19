@@ -25,7 +25,7 @@ import {
   ToolVersionInfo,
 } from "./types";
 
-const CURRENT_APP_VERSION = "2.0.2";
+const CURRENT_APP_VERSION = "2.0.3";
 
 const parseRawYtdlJsonToMediaInfo = (raw: any): MediaInfo => {
   const formats = Array.isArray(raw.formats) ? raw.formats : [];
@@ -208,6 +208,16 @@ const DEFAULT_OPTIONS: DownloadOptions = {
 };
 
 type ActiveTab = "download" | "batch" | "options" | "history" | "updates";
+
+export const formatFullDuration = (seconds?: number): string => {
+  if (!seconds || isNaN(seconds)) return "00:00:00";
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = Math.floor(seconds % 60);
+  return `${h.toString().padStart(2, "0")}:${m
+    .toString()
+    .padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
+};
 
 export function App() {
   const [activeTab, setActiveTab] = useState<ActiveTab>("download");
@@ -798,6 +808,10 @@ export function App() {
         customFilename: info.title,
         videoStreamId: "best",
         audioStreamId: "ba",
+        endTime:
+          info.duration && info.duration > 0
+            ? formatFullDuration(info.duration)
+            : prev.endTime,
         subtitleLang:
           info.subtitles && info.subtitles.length > 0
             ? info.subtitles[0].code

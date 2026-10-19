@@ -404,6 +404,56 @@ fn format_bytes(bytes: u64) -> String {
     }
 }
 
+fn parse_time_to_seconds(t: &str) -> Option<f64> {
+    let clean = t.trim().to_lowercase();
+    if clean.is_empty() || clean == "inf" {
+        return None;
+    }
+    let parts: Vec<&str> = clean.split(':').collect();
+    match parts.len() {
+        1 => parts[0].parse::<f64>().ok(),
+        2 => {
+            let m = parts[0].parse::<f64>().ok()?;
+            let s = parts[1].parse::<f64>().ok()?;
+            Some(m * 60.0 + s)
+        }
+        3 => {
+            let h = parts[0].parse::<f64>().ok()?;
+            let m = parts[1].parse::<f64>().ok()?;
+            let s = parts[2].parse::<f64>().ok()?;
+            Some(h * 3600.0 + m * 60.0 + s)
+        }
+        _ => None,
+    }
+}
+
+fn format_seconds_to_timestamp(sec: f64) -> String {
+    let total_secs = sec.max(0.0).floor() as u64;
+    let h = total_secs / 3600;
+    let m = (total_secs % 3600) / 60;
+    let s = total_secs % 60;
+    format!("{:02}:{:02}:{:02}", h, m, s)
+}
+
+fn parse_ffmpeg_time_and_speed(line: &str) -> Option<(f64, String)> {
+    if let Some(t_idx) = line.find("time=") {
+        let after_time = &line[t_idx + 5..];
+        let time_token = after_time.split_whitespace().next()?;
+        let time_clean = time_token.split('.').next().unwrap_or(time_token);
+        let sec = parse_time_to_seconds(time_clean)?;
+
+        let speed = if let Some(s_idx) = line.find("speed=") {
+            let after_speed = &line[s_idx + 6..];
+            after_speed.split_whitespace().next().unwrap_or("").to_string()
+        } else {
+            "".to_string()
+        };
+
+        return Some((sec, speed));
+    }
+    None
+}
+
 // ---------------------------------------------------------------------------
 // Command 1: Fetch Media Info (Dynamic Qualities, Formats, Subtitles)
 // ---------------------------------------------------------------------------
@@ -733,12 +783,39 @@ async fn start_download(
             }
         }
 
-        // Output filename template (Include Media ID in Title option)
+        // Timeframe / Clipping Setup & Filename Suffix
+        let mut is_clipping_active = false;
+        let mut clip_target_duration: Option<f64> = None;
         let mut suffix_tag = String::new();
-        if options.enable_clip && !options.start_time.trim().is_empty() && !options.end_time.trim().is_empty() {
-            let s_clean = options.start_time.trim().replace(':', "-");
-            let e_clean = options.end_time.trim().replace(':', "-");
-            suffix_tag = format!(" [Clip {} to {}]", s_clean, e_clean);
+        let mut clip_start_str = String::new();
+        let mut clip_end_str = String::new();
+
+        if options.enable_clip && !is_subtitles_only {
+            let s_raw = options.start_time.trim();
+            let e_raw = options.end_time.trim();
+
+            let s_sec = parse_time_to_seconds(s_raw).unwrap_or(0.0);
+            let e_sec_opt = parse_time_to_seconds(e_raw);
+
+            if let Some(e_sec) = e_sec_opt {
+                if e_sec > s_sec {
+                    is_clipping_active = true;
+                    clip_target_duration = Some(e_sec - s_sec);
+                    clip_start_str = format_seconds_to_timestamp(s_sec);
+                    clip_end_str = format_seconds_to_timestamp(e_sec);
+                    suffix_tag = format!(" [Clip {} to {}]", clip_start_str.replace(':', "-"), clip_end_str.replace(':', "-"));
+                } else if s_sec > 0.0 {
+                    is_clipping_active = true;
+                    clip_start_str = format_seconds_to_timestamp(s_sec);
+                    clip_end_str = "inf".to_string();
+                    suffix_tag = format!(" [Clip {} to End]", clip_start_str.replace(':', "-"));
+                }
+            } else if s_sec > 0.0 || e_raw.eq_ignore_ascii_case("inf") {
+                is_clipping_active = true;
+                clip_start_str = format_seconds_to_timestamp(s_sec);
+                clip_end_str = "inf".to_string();
+                suffix_tag = format!(" [Clip {} to End]", clip_start_str.replace(':', "-"));
+            }
         }
 
         let out_tmpl = if let Some(ref custom_name) = options.custom_filename {
@@ -799,7 +876,7 @@ async fn start_download(
             cmd.arg("--no-part");
         }
         cmd.arg("--no-keep-fragments");
-        if options.overwrite_files {
+        if options.overwrite_files || is_clipping_active {
             cmd.arg("--force-overwrites");
         } else {
             cmd.arg("--no-overwrites");
@@ -909,26 +986,16 @@ async fn start_download(
         }
 
         // Timeframe / Clipping Section (Download only requested timeframe & frame-accurate cut)
-        if options.enable_clip && !is_subtitles_only {
-            let s = options.start_time.trim();
-            let e = options.end_time.trim();
-            if !s.is_empty() {
-                let end_val = if e.is_empty() || (e == "00:00:00" && s != "00:00:00") {
-                    "inf"
-                } else {
-                    e
-                };
-                if s != end_val {
-                    // Download only the requested timeframe (saves 95% bandwidth and finishes in seconds)
-                    cmd.args(["--download-sections", &format!("*{}-{}", s, end_val)]);
+        if is_clipping_active {
+            let section_arg = format!("*{}-{}", clip_start_str, clip_end_str);
+            cmd.args(["--download-sections", &section_arg]);
 
-                    if options.precise_cut {
-                        // Force exact frame re-encoding at cut boundaries with FFmpeg
-                        cmd.arg("--force-keyframes-at-cuts");
-                    } else {
-                        cmd.arg("--no-force-keyframes-at-cuts");
-                    }
-                }
+            if options.precise_cut {
+                cmd.arg("--force-keyframes-at-cuts");
+                // Accelerate FFmpeg keyframe generation & encoding using all CPU threads and veryfast preset
+                cmd.args(["--downloader-args", "ffmpeg:-preset veryfast -threads 0"]);
+            } else {
+                cmd.arg("--no-force-keyframes-at-cuts");
             }
         }
 
@@ -1036,10 +1103,12 @@ async fn start_download(
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
 
-        // Read stderr in background thread to capture errors
+        // Read stderr in background thread to capture errors & FFmpeg cut progress
         let err_lines = Arc::new(Mutex::new(Vec::<String>::new()));
         let err_lines_clone = err_lines.clone();
         let app_err = app.clone();
+        let tid_err = tid.clone();
+        let clip_dur_err = clip_target_duration;
         if let Some(se) = stderr {
             std::thread::spawn(move || {
                 let reader = BufReader::new(se);
@@ -1047,6 +1116,42 @@ async fn start_download(
                     let trimmed = line.trim().to_string();
                     if !trimmed.is_empty() {
                         let _ = app_err.emit("download-log", trimmed.clone());
+
+                        // Live progress for FFmpeg cut & encoding from stderr
+                        if let Some((sec, speed)) = parse_ffmpeg_time_and_speed(&trimmed) {
+                            let pct = if let Some(target_dur) = clip_dur_err {
+                                if target_dur > 0.0 {
+                                    ((sec / target_dur) * 100.0).clamp(2.0, 99.5)
+                                } else {
+                                    50.0
+                                }
+                            } else {
+                                50.0
+                            };
+                            let text = if let Some(target_dur) = clip_dur_err {
+                                format!(
+                                    "Cutting & Encoding: {:.1}% ({}/{} at {})",
+                                    pct,
+                                    format_seconds_to_timestamp(sec),
+                                    format_seconds_to_timestamp(target_dur),
+                                    if speed.is_empty() { "1x".to_string() } else { speed.clone() }
+                                )
+                            } else {
+                                format!("Cutting media: {} (Speed: {})", format_seconds_to_timestamp(sec), speed)
+                            };
+                            let _ = app_err.emit(
+                                "download-progress",
+                                ProgressPayload {
+                                    task_id: tid_err.clone(),
+                                    percent: pct,
+                                    text,
+                                    speed: speed.clone(),
+                                    eta: "".to_string(),
+                                    status: "downloading".to_string(),
+                                },
+                            );
+                        }
+
                         err_lines_clone.lock().unwrap().push(trimmed);
                     }
                 }
@@ -1101,6 +1206,52 @@ async fn start_download(
                             text: after_tag.to_string(),
                             speed,
                             eta,
+                            status: "downloading".to_string(),
+                        },
+                    );
+                } else if trimmed.contains("time=") && (trimmed.contains("frame=") || trimmed.contains("size=")) {
+                    if let Some((sec, speed)) = parse_ffmpeg_time_and_speed(trimmed) {
+                        let pct = if let Some(target_dur) = clip_target_duration {
+                            if target_dur > 0.0 {
+                                ((sec / target_dur) * 100.0).clamp(2.0, 99.5)
+                            } else {
+                                50.0
+                            }
+                        } else {
+                            50.0
+                        };
+                        let text = if let Some(target_dur) = clip_target_duration {
+                            format!(
+                                "Cutting & Encoding: {:.1}% ({}/{} at {})",
+                                pct,
+                                format_seconds_to_timestamp(sec),
+                                format_seconds_to_timestamp(target_dur),
+                                if speed.is_empty() { "1x".to_string() } else { speed.clone() }
+                            )
+                        } else {
+                            format!("Cutting media: {} (Speed: {})", format_seconds_to_timestamp(sec), speed)
+                        };
+                        let _ = app.emit(
+                            "download-progress",
+                            ProgressPayload {
+                                task_id: tid.clone(),
+                                percent: pct,
+                                text,
+                                speed: speed.clone(),
+                                eta: "".to_string(),
+                                status: "downloading".to_string(),
+                            },
+                        );
+                    }
+                } else if trimmed.contains("Downloading 1 time ranges") {
+                    let _ = app.emit(
+                        "download-progress",
+                        ProgressPayload {
+                            task_id: tid.clone(),
+                            percent: 5.0,
+                            text: format!("Extracting timeframe section: {}", trimmed),
+                            speed: "".to_string(),
+                            eta: "".to_string(),
                             status: "downloading".to_string(),
                         },
                     );

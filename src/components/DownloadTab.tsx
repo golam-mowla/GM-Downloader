@@ -128,6 +128,16 @@ export const DownloadTab: React.FC<DownloadTabProps> = ({
     return `${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
   };
 
+  const formatFullDuration = (seconds?: number) => {
+    if (!seconds || isNaN(seconds)) return "00:00:00";
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const s = Math.floor(seconds % 60);
+    return `${h.toString().padStart(2, "0")}:${m
+      .toString()
+      .padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
+  };
+
   const isBusy =
     progress.status === "downloading" || progress.status === "processing";
 
@@ -584,50 +594,105 @@ export const DownloadTab: React.FC<DownloadTabProps> = ({
             </div>
 
             <div
-              className={`grid grid-cols-3 gap-2.5 transition-opacity ${
+              className={`space-y-2.5 transition-opacity ${
                 options.enableClip ? "opacity-100" : "opacity-50 pointer-events-none"
               }`}
             >
-              <div>
-                <label className="block text-[11px] font-bold text-slate-600 dark:text-slate-300 mb-1">
-                  Start Time
-                </label>
-                <input
-                  type="text"
-                  value={options.startTime}
-                  onChange={(e) => updateOption("startTime", e.target.value)}
-                  placeholder="00:01:00"
-                  className="neon-input w-full px-2.5 py-1.5 text-xs font-mono font-bold text-center"
-                />
-              </div>
-              <div>
-                <label className="block text-[11px] font-bold text-slate-600 dark:text-slate-300 mb-1">
-                  End Time
-                </label>
-                <input
-                  type="text"
-                  value={options.endTime}
-                  onChange={(e) => updateOption("endTime", e.target.value)}
-                  placeholder="00:03:30"
-                  className="neon-input w-full px-2.5 py-1.5 text-xs font-mono font-bold text-center"
-                />
-              </div>
-              <div className="flex items-end pb-1">
-                <label
-                  title="Forces keyframes at cut points via FFmpeg"
-                  className="inline-flex items-center gap-1.5 text-xs font-bold text-slate-700 dark:text-slate-300 cursor-pointer"
-                >
+              <div className="grid grid-cols-3 gap-2.5">
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-600 dark:text-slate-300 mb-1">
+                    Start Time
+                  </label>
                   <input
-                    type="checkbox"
-                    checked={options.preciseCut}
-                    onChange={(e) =>
-                      updateOption("preciseCut", e.target.checked)
-                    }
-                    className="w-4 h-4 accent-purple-600 rounded"
+                    type="text"
+                    value={options.startTime}
+                    onChange={(e) => updateOption("startTime", e.target.value)}
+                    placeholder="00:00:00"
+                    className="neon-input w-full px-2.5 py-1.5 text-xs font-mono font-bold text-center"
+                    title="Start time: HH:MM:SS or seconds"
                   />
-                  Precise Cut
-                </label>
+                </div>
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-600 dark:text-slate-300 mb-1">
+                    End Time
+                  </label>
+                  <input
+                    type="text"
+                    value={options.endTime}
+                    onChange={(e) => updateOption("endTime", e.target.value)}
+                    placeholder="00:02:00"
+                    className="neon-input w-full px-2.5 py-1.5 text-xs font-mono font-bold text-center"
+                    title="End time: HH:MM:SS or seconds"
+                  />
+                </div>
+                <div className="flex items-end pb-1">
+                  <label
+                    title="Forces keyframes at cut points via multithreaded FFmpeg for frame-accurate cuts"
+                    className="inline-flex items-center gap-1.5 text-xs font-bold text-slate-700 dark:text-slate-300 cursor-pointer"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={options.preciseCut}
+                      onChange={(e) =>
+                        updateOption("preciseCut", e.target.checked)
+                      }
+                      className="w-4 h-4 accent-purple-600 rounded"
+                    />
+                    Precise Cut
+                  </label>
+                </div>
               </div>
+
+              {/* Quick Preset Buttons */}
+              <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+                <span className="text-[10px] font-bold text-slate-400">Presets:</span>
+                {mediaInfo?.duration && mediaInfo.duration > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      updateOption("startTime", "00:00:00");
+                      updateOption("endTime", formatFullDuration(mediaInfo.duration));
+                    }}
+                    className="px-2 py-0.5 rounded text-[10px] font-bold bg-purple-100 hover:bg-purple-200 dark:bg-purple-950/80 dark:hover:bg-purple-900 text-purple-700 dark:text-purple-300 border border-purple-300 dark:border-purple-700 transition-all"
+                  >
+                    Full ({formatFullDuration(mediaInfo.duration)})
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => {
+                    updateOption("startTime", "00:00:00");
+                    updateOption("endTime", "00:00:30");
+                  }}
+                  className="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 transition-all"
+                >
+                  00:00 - 00:30
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    updateOption("startTime", "00:00:00");
+                    updateOption("endTime", "00:01:00");
+                  }}
+                  className="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 transition-all"
+                >
+                  00:00 - 01:00
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    updateOption("startTime", "00:00:00");
+                    updateOption("endTime", "00:02:00");
+                  }}
+                  className="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 transition-all"
+                >
+                  00:00 - 02:00
+                </button>
+              </div>
+
+              <p className="text-[10px] text-slate-500 dark:text-slate-400">
+                ⚡ <strong>Precise Cut:</strong> Re-encodes keyframes at exact millisecond borders via FFmpeg.
+              </p>
             </div>
           </div>
         </div>
