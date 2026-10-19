@@ -25,7 +25,7 @@ import {
   ToolVersionInfo,
 } from "./types";
 
-const CURRENT_APP_VERSION = "2.0.1";
+const CURRENT_APP_VERSION = "2.0.2";
 
 const parseRawYtdlJsonToMediaInfo = (raw: any): MediaInfo => {
   const formats = Array.isArray(raw.formats) ? raw.formats : [];
@@ -216,7 +216,13 @@ export function App() {
     try {
       const saved = localStorage.getItem("gm_downloader_options_v2");
       if (saved) {
-        return { ...DEFAULT_OPTIONS, ...JSON.parse(saved), overwriteFiles: false };
+        return {
+          ...DEFAULT_OPTIONS,
+          ...JSON.parse(saved),
+          url: "", // Never restore previous link on app launch
+          customFilename: "",
+          overwriteFiles: false,
+        };
       }
     } catch {
       // ignore
@@ -293,7 +299,9 @@ export function App() {
       root.classList.toggle("dark", prefersDark);
     }
     try {
-      localStorage.setItem("gm_downloader_options_v2", JSON.stringify(options));
+      // Exclude session link and custom filename so app always opens fresh and clean
+      const toSave = { ...options, url: "", customFilename: "" };
+      localStorage.setItem("gm_downloader_options_v2", JSON.stringify(toSave));
     } catch {
       // ignore
     }
@@ -312,6 +320,7 @@ export function App() {
   useEffect(() => {
     let unlistenProgress: (() => void) | undefined;
     let unlistenLog: (() => void) | undefined;
+    let unlistenOpenUrl: (() => void) | undefined;
 
     const setupListeners = async () => {
       try {
@@ -459,6 +468,51 @@ export function App() {
         }
       };
 
+      // Handle URLs sent from Browser Extension or external triggers
+      (window as any).onExternalUrl = (externalUrl: string) => {
+        if (externalUrl && typeof externalUrl === "string") {
+          const cleanUrl = externalUrl.trim();
+          if (cleanUrl) {
+            setActiveTab("download");
+            setOptions((prev) => ({ ...prev, url: cleanUrl }));
+            setTimeout(() => {
+              handleFetchInfo(cleanUrl);
+            }, 200);
+          }
+        }
+      };
+
+      try {
+        unlistenOpenUrl = await listen<{ url: string }>("open-url", (event) => {
+          const incoming = event.payload?.url;
+          if (incoming && typeof incoming === "string") {
+            const cleanUrl = incoming.trim();
+            if (cleanUrl) {
+              setActiveTab("download");
+              setOptions((prev) => ({ ...prev, url: cleanUrl }));
+              setTimeout(() => {
+                handleFetchInfo(cleanUrl);
+              }, 200);
+            }
+          }
+        });
+
+        // Check if started with pending link from protocol or CLI
+        const pendingUrl = await invoke<string | null>("get_pending_url");
+        if (pendingUrl && typeof pendingUrl === "string") {
+          const cleanUrl = pendingUrl.trim();
+          if (cleanUrl) {
+            setActiveTab("download");
+            setOptions((prev) => ({ ...prev, url: cleanUrl }));
+            setTimeout(() => {
+              handleFetchInfo(cleanUrl);
+            }, 300);
+          }
+        }
+      } catch {
+        // Not in Tauri or command unavailable
+      }
+
       if ((window as any).GMAndroidBridge?.getPendingSharedUrl) {
         try {
           const pending = (window as any).GMAndroidBridge.getPendingSharedUrl();
@@ -477,6 +531,7 @@ export function App() {
     return () => {
       if (unlistenProgress) unlistenProgress();
       if (unlistenLog) unlistenLog();
+      if (unlistenOpenUrl) unlistenOpenUrl();
     };
   }, []);
 

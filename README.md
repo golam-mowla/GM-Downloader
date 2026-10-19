@@ -28,6 +28,10 @@
 - **🔄 Core Engine Update Center:**
   - One-click updater for `yt-dlp`, `Deno`, and `FFmpeg`
   - Version comparison and visual success alerts
+- **🧩 "Download with Parrot" Browser Extension:**
+  - 1-click download from right-click context menu on any website, including Instagram reels & feed posts, YouTube videos & shorts, Facebook, TikTok, Twitter/X.
+  - Automatically sends links directly into GM Downloader (Parrot) and fetches streams instantly.
+  - Available in `browser-extension/` directory.
 
 ---
 

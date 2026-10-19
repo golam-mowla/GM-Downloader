@@ -6,7 +6,7 @@ use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
-use tauri::{command, AppHandle, Emitter, State};
+use tauri::{command, AppHandle, Emitter, Manager, State};
 
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
@@ -17,6 +17,10 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 pub struct DownloadState {
     pub active_pids: Arc<Mutex<HashMap<String, u32>>>,
     pub cancelled_tasks: Arc<Mutex<HashMap<String, bool>>>,
+}
+
+pub struct AppUrlState {
+    pub pending_url: Arc<Mutex<Option<String>>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1461,12 +1465,211 @@ async fn install_app_update(_app: AppHandle, download_url: String) -> Result<Str
     .map_err(|e| format!("Task join error: {}", e))?
 }
 
+fn decode_percent_encoded(input: &str) -> String {
+    let mut bytes = Vec::new();
+    let mut chars = input.bytes();
+    while let Some(b) = chars.next() {
+        if b == b'%' {
+            let h1 = chars.next();
+            let h2 = chars.next();
+            if let (Some(h1), Some(h2)) = (h1, h2) {
+                let hex_str = [h1, h2];
+                if let Ok(hex_str) = std::str::from_utf8(&hex_str) {
+                    if let Ok(val) = u8::from_str_radix(hex_str, 16) {
+                        bytes.push(val);
+                        continue;
+                    }
+                }
+                bytes.push(b'%');
+                bytes.push(h1);
+                bytes.push(h2);
+            } else {
+                bytes.push(b'%');
+            }
+        } else if b == b'+' {
+            bytes.push(b' ');
+        } else {
+            bytes.push(b);
+        }
+    }
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+async fn start_local_bridge(app_handle: AppHandle) {
+    let listener = match tokio::net::TcpListener::bind("127.0.0.1:9666").await {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("GM Downloader: Failed to bind bridge port 9666: {}", e);
+            return;
+        }
+    };
+
+    loop {
+        if let Ok((mut stream, _)) = listener.accept().await {
+            let handle = app_handle.clone();
+            tokio::spawn(async move {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let mut buf = [0u8; 4096];
+                if let Ok(n) = stream.read(&mut buf).await {
+                    let req_str = String::from_utf8_lossy(&buf[..n]);
+
+                    if req_str.starts_with("OPTIONS") {
+                        let resp = "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: *\r\nConnection: close\r\n\r\n";
+                        let _ = stream.write_all(resp.as_bytes()).await;
+                        return;
+                    }
+
+                    if req_str.contains("/ping") {
+                        let resp = "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{\"status\":\"alive\",\"app\":\"GM Downloader\"}\r\n";
+                        let _ = stream.write_all(resp.as_bytes()).await;
+                        return;
+                    }
+
+                    let mut target_url = None;
+                    if let Some(idx) = req_str.find("/open?url=") {
+                        let sub = &req_str[idx + 10..];
+                        let end_idx = sub.find(|c: char| c == ' ' || c == '\r' || c == '\n').unwrap_or(sub.len());
+                        let raw = &sub[..end_idx];
+                        target_url = Some(decode_percent_encoded(raw));
+                    }
+
+                    if let Some(url) = target_url {
+                        let clean = url.trim().to_string();
+                        if !clean.is_empty() {
+                            let _ = handle.emit("open-url", serde_json::json!({ "url": clean }));
+                            if let Some(win) = handle.get_webview_window("main") {
+                                let _ = win.unminimize();
+                                let _ = win.show();
+                                let _ = win.set_focus();
+                            }
+                        }
+                        let body = "{\"status\":\"ok\",\"received\":true}";
+                        let resp = format!(
+                            "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            body.len(),
+                            body
+                        );
+                        let _ = stream.write_all(resp.as_bytes()).await;
+                    } else {
+                        let body = "{\"error\":\"missing_url\"}";
+                        let resp = format!(
+                            "HTTP/1.1 400 Bad Request\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            body.len(),
+                            body
+                        );
+                        let _ = stream.write_all(resp.as_bytes()).await;
+                    }
+                }
+            });
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn register_windows_protocols() {
+    if let Ok(exe_path) = env::current_exe() {
+        let exe_str = exe_path.to_string_lossy();
+        let cmd = format!("\"{}\" \"%1\"", exe_str);
+
+        let _ = Command::new("reg")
+            .args(["add", "HKCU\\Software\\Classes\\parrot", "/ve", "/d", "URL:Parrot Protocol", "/f"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .status();
+        let _ = Command::new("reg")
+            .args(["add", "HKCU\\Software\\Classes\\parrot", "/v", "URL Protocol", "/d", "", "/f"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .status();
+        let _ = Command::new("reg")
+            .args(["add", "HKCU\\Software\\Classes\\parrot\\shell\\open\\command", "/ve", "/d", &cmd, "/f"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .status();
+
+        let _ = Command::new("reg")
+            .args(["add", "HKCU\\Software\\Classes\\gmdownloader", "/ve", "/d", "URL:GM Downloader Protocol", "/f"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .status();
+        let _ = Command::new("reg")
+            .args(["add", "HKCU\\Software\\Classes\\gmdownloader", "/v", "URL Protocol", "/d", "", "/f"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .status();
+        let _ = Command::new("reg")
+            .args(["add", "HKCU\\Software\\Classes\\gmdownloader\\shell\\open\\command", "/ve", "/d", &cmd, "/f"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .status();
+    }
+}
+
+#[command]
+fn get_pending_url(state: State<'_, AppUrlState>) -> Option<String> {
+    let mut lock = state.pending_url.lock().ok()?;
+    lock.take()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let mut pending_arg_url = None;
+    let args: Vec<String> = env::args().collect();
+    if args.len() > 1 {
+        for arg in &args[1..] {
+            let trimmed = arg.trim();
+            if trimmed.starts_with("parrot://") || trimmed.starts_with("gmdownloader://") {
+                let without_proto = if trimmed.starts_with("parrot://") {
+                    &trimmed["parrot://".len()..]
+                } else {
+                    &trimmed["gmdownloader://".len()..]
+                };
+                let mut extracted = without_proto;
+                if let Some(pos) = extracted.find("open?url=") {
+                    extracted = &extracted[pos + 9..];
+                } else if let Some(pos) = extracted.find("?url=") {
+                    extracted = &extracted[pos + 5..];
+                }
+                let dec = decode_percent_encoded(extracted);
+                if !dec.trim().is_empty() {
+                    pending_arg_url = Some(dec.trim().to_string());
+                    break;
+                }
+            } else if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+                pending_arg_url = Some(trimmed.to_string());
+                break;
+            }
+        }
+    }
+
+    if let Some(ref url) = pending_arg_url {
+        if let Ok(addr) = "127.0.0.1:9666".parse() {
+            if let Ok(mut stream) = std::net::TcpStream::connect_timeout(
+                &addr,
+                std::time::Duration::from_millis(300),
+            ) {
+                use std::io::Write;
+                let req = format!(
+                    "GET /open?url={} HTTP/1.1\r\nHost: 127.0.0.1:9666\r\nConnection: close\r\n\r\n",
+                    url
+                );
+                let _ = stream.write_all(req.as_bytes());
+                std::process::exit(0);
+            }
+        }
+    }
+
     tauri::Builder::default()
         .manage(DownloadState {
             active_pids: Arc::new(Mutex::new(HashMap::new())),
             cancelled_tasks: Arc::new(Mutex::new(HashMap::new())),
+        })
+        .manage(AppUrlState {
+            pending_url: Arc::new(Mutex::new(pending_arg_url)),
+        })
+        .setup(|app| {
+            #[cfg(target_os = "windows")]
+            register_windows_protocols();
+
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                start_local_bridge(handle).await;
+            });
+            Ok(())
         })
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
@@ -1478,7 +1681,8 @@ pub fn run() {
             check_tool_updates,
             update_tool,
             open_folder,
-            install_app_update
+            install_app_update,
+            get_pending_url
         ])
         .run(tauri::generate_context!())
         .expect("error while running GM Downloader");
